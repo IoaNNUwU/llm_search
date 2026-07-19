@@ -1,0 +1,4 @@
+data/postgres_data/
+data/ollama/
+data/projects/
+.env

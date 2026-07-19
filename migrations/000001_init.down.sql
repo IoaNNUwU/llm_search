@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS project_evaluations;
+DROP TABLE IF EXISTS articles_sections;
+DROP TABLE IF EXISTS articles;
+DROP TABLE IF EXISTS projects;
+DROP EXTENSION IF EXISTS vector;

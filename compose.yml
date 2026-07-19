@@ -1,0 +1,89 @@
+networks:
+  io_llm_search_engine:
+
+services:
+
+  web:
+    build: .
+    networks:
+      - io_llm_search_engine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./src:/var/www/html
+      - ./data/projects:/var/www/projects
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+      PROJECTS_PATH: /var/www/projects
+    depends_on:
+      ollama:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    networks:
+      - io_llm_search_engine
+    volumes:
+      - ./data/postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate
+    restart: "no"
+    networks:
+      - io_llm_search_engine
+    volumes:
+      - ./migrations:/migrations
+    command: -path=/migrations -database "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/postgres?sslmode=disable" up
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama
+    networks:
+      - io_llm_search_engine
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    environment:
+      OLLAMA_MODEL: ${OLLAMA_MODEL}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ollama serve &
+        until ollama list > /dev/null 2>&1; do
+          sleep 2
+        done
+        echo "Pulling chat model"
+        ollama pull "$$OLLAMA_MODEL"
+        echo "Pulling embed model"
+        ollama pull "$$OLLAMA_EMBED_MODEL"
+        wait
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q \"$$OLLAMA_MODEL\" && ollama list | grep -q \"$$OLLAMA_EMBED_MODEL\""]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
