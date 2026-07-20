@@ -176,7 +176,7 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
             renderProjects(data.projects || []);
 
             const busy = (data.projects || []).some((p) =>
-                p.evaluation && (p.evaluation.status === 'processing' || p.evaluation.status === 'pending')
+                p.evaluation && ['processing', 'pending', 'failed'].includes(p.evaluation.status)
             );
             if (busy && !pollTimer) {
                 pollTimer = setInterval(loadProjects, 2000);

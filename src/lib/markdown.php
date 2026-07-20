@@ -147,11 +147,65 @@ function collect_markdown_files(string $root): array
     return $files;
 }
 
+function project_file_link_legacy(string $baseUrl, string $relativePath): string
+{
+    $base = rtrim($baseUrl, '/');
+    $path = ltrim(str_replace('\\', '/', $relativePath), '/');
+
+    return $base . '/' . $path;
+}
+
 function project_file_link(string $baseUrl, string $relativePath): string
 {
     $base = rtrim($baseUrl, '/');
     $path = ltrim(str_replace('\\', '/', $relativePath), '/');
+
+    // Uploaded folders include their root name (e.g. "docs/inzhenery/file.md") — omit it from links.
+    if (str_contains($path, '/')) {
+        $path = substr($path, strpos($path, '/') + 1);
+    }
+
+    if (str_ends_with(strtolower($path), '.md')) {
+        $path = substr($path, 0, -3);
+    }
+
     return $base . '/' . $path;
+}
+
+/**
+ * @return list<string>
+ */
+function project_file_link_variants(string $baseUrl, string $relativePath): array
+{
+    return array_values(array_unique([
+        project_file_link($baseUrl, $relativePath),
+        project_file_link_legacy($baseUrl, $relativePath),
+    ]));
+}
+
+function is_file_indexed(array $indexedLinks, string $baseUrl, string $relativePath): bool
+{
+    foreach (project_file_link_variants($baseUrl, $relativePath) as $link) {
+        if (isset($indexedLinks[$link])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function delete_articles_for_file(PDO $pdo, int $projectId, string $baseUrl, string $relativePath): void
+{
+    foreach (project_file_link_variants($baseUrl, $relativePath) as $link) {
+        $stmt = $pdo->prepare('SELECT id FROM articles WHERE project_id = :project_id AND link = :link');
+        $stmt->execute(['project_id' => $projectId, 'link' => $link]);
+        $id = $stmt->fetchColumn();
+        if ($id === false) {
+            continue;
+        }
+        $articleId = (int) $id;
+        $pdo->prepare('DELETE FROM articles_sections WHERE article_id = :id')->execute(['id' => $articleId]);
+        $pdo->prepare('DELETE FROM articles WHERE id = :id')->execute(['id' => $articleId]);
+    }
 }
 
 function section_link(string $articleLink, ?string $anchor): string

@@ -23,7 +23,17 @@ $windowId = isset($windowId) ? (string) $windowId : chat_window_id();
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="assets/css/app.css">
+    <link rel="stylesheet" href="<?= h(asset_url('css/app.css')) ?>">
+    <?php
+    $jsScope = [];
+    foreach (glob(__DIR__ . '/../assets/js/*.js') as $jsFile) {
+        $name = basename($jsFile);
+        $jsScope['./' . $name] = asset_url('js/' . $name);
+    }
+    ?>
+    <script type="importmap">
+    <?= json_encode(['scopes' => ['/assets/js/' => $jsScope]], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?>
+    </script>
 </head>
 <body>
     <?php require __DIR__ . '/partials/sidebar.php'; ?>
@@ -64,6 +74,6 @@ $windowId = isset($windowId) ? (string) $windowId : chat_window_id();
     <?php require __DIR__ . '/partials/upload_modal.php'; ?>
     <?php require __DIR__ . '/partials/log_modal.php'; ?>
 
-    <script type="module" src="assets/js/app.js"></script>
+    <script type="module" src="<?= h(asset_url('js/app.js')) ?>"></script>
 </body>
 </html>

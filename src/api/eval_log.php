@@ -50,6 +50,7 @@ try {
         'total_sections' => $row['total_sections'] !== null ? (int) $row['total_sections'] : null,
         'current_detail' => $row['current_detail'],
         'error' => $row['error'],
+        'created_at' => $row['created_at'],
         'updated_at' => $row['updated_at'],
         'events' => read_evaluation_events($projectId),
     ]);
