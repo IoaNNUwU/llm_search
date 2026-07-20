@@ -91,13 +91,42 @@ try {
         throw new RuntimeException("Project storage missing: {$storageDir}");
     }
 
-    reset_evaluation_events($projectId);
+    $articleCountStmt = $pdo->prepare('SELECT COUNT(*) FROM articles WHERE project_id = :id');
+    $articleCountStmt->execute(['id' => $projectId]);
+    $articleCount = (int) $articleCountStmt->fetchColumn();
+    $resume = evaluation_is_resumable($evaluation, $articleCount);
 
     $files = collect_markdown_files($storageDir);
+    $baseUrl = (string) $row['base_url'];
+    $fileTotal = count($files);
+
+    if ($resume) {
+        $currentFile = trim((string) ($evaluation['current_file'] ?? ''));
+        if ($currentFile !== '') {
+            delete_articles_for_file($pdo, $projectId, $baseUrl, $currentFile);
+        }
+        append_evaluation_event($projectId, [
+            'phase' => 'resume',
+            'message' => 'Resuming interrupted evaluation',
+            'text' => null,
+        ]);
+    } else {
+        reset_evaluation_events($projectId);
+    }
+
+    $indexedLinks = fetch_indexed_article_links($pdo, $projectId);
+
+    $processed = 0;
+    foreach ($files as $relPath) {
+        if (is_file_indexed($indexedLinks, $baseUrl, $relPath)) {
+            $processed++;
+        }
+    }
+
     update_evaluation($pdo, $evaluationId, [
         'status' => 'processing',
-        'total_files' => count($files),
-        'processed_files' => 0,
+        'total_files' => $fileTotal,
+        'processed_files' => $processed,
         'current_file' => null,
         'current_phase' => null,
         'current_section' => null,
@@ -105,16 +134,6 @@ try {
         'current_detail' => null,
         'error' => null,
     ]);
-
-    // Clear previous articles for re-runs.
-    $articleIds = $pdo->prepare('SELECT id FROM articles WHERE project_id = :id');
-    $articleIds->execute(['id' => $projectId]);
-    $ids = $articleIds->fetchAll(PDO::FETCH_COLUMN);
-    if ($ids) {
-        $in = implode(',', array_map('intval', $ids));
-        $pdo->exec("DELETE FROM articles_sections WHERE article_id IN ({$in})");
-        $pdo->exec("DELETE FROM articles WHERE project_id = {$projectId}");
-    }
 
     $insertArticle = $pdo->prepare(
         'INSERT INTO articles (project_id, title, description, link, embedding)
@@ -126,12 +145,17 @@ try {
          VALUES (:article_id, :title, :description, :content, :link, CAST(:embedding AS vector))'
     );
 
-    $baseUrl = (string) $row['base_url'];
-    $processed = 0;
-    $fileTotal = count($files);
-
     foreach ($files as $fileIndex => $relPath) {
         assert_not_cancelled($pdo, $evaluationId);
+
+        $link = project_file_link($baseUrl, $relPath);
+        if (is_file_indexed($indexedLinks, $baseUrl, $relPath)) {
+            $processed++;
+            update_evaluation($pdo, $evaluationId, [
+                'processed_files' => $processed,
+            ]);
+            continue;
+        }
 
         $fullPath = $storageDir . '/' . $relPath;
         $content = file_get_contents($fullPath);
@@ -164,8 +188,6 @@ try {
             $meta['description'],
             mb_substr($content, 0, 4000, 'UTF-8'),
         ]));
-        $link = project_file_link($baseUrl, $relPath);
-
         $insertArticle->execute([
             'project_id' => $projectId,
             'title' => $meta['title'],

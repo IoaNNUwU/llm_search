@@ -19,6 +19,14 @@ function h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function asset_url(string $path): string
+{
+    $relative = ltrim(str_replace('\\', '/', $path), '/');
+    $full = __DIR__ . '/../assets/' . $relative;
+    $version = is_file($full) ? (string) filemtime($full) : (string) time();
+    return 'assets/' . $relative . '?v=' . $version;
+}
+
 function json_response(array $data, int $status = 200): never
 {
     http_response_code($status);
@@ -162,8 +170,92 @@ function read_evaluation_events(int $projectId, int $limit = 500): array
     return $events;
 }
 
+function is_evaluator_running(int $projectId): bool
+{
+    $pidFile = evaluation_pid_path($projectId);
+    if (!is_file($pidFile)) {
+        return false;
+    }
+    $pid = (int) trim((string) file_get_contents($pidFile));
+    if ($pid < 1) {
+        return false;
+    }
+    if (function_exists('posix_kill')) {
+        return @posix_kill($pid, 0);
+    }
+    return is_dir("/proc/{$pid}");
+}
+
+/**
+ * @return array<string, true>
+ */
+function fetch_indexed_article_links(PDO $pdo, int $projectId): array
+{
+    $stmt = $pdo->prepare('SELECT link FROM articles WHERE project_id = :id');
+    $stmt->execute(['id' => $projectId]);
+    $links = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $link) {
+        $links[(string) $link] = true;
+    }
+    return $links;
+}
+
+function delete_article_by_link(PDO $pdo, int $projectId, string $link): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM articles WHERE project_id = :project_id AND link = :link');
+    $stmt->execute(['project_id' => $projectId, 'link' => $link]);
+    $id = $stmt->fetchColumn();
+    if ($id === false) {
+        return;
+    }
+    $articleId = (int) $id;
+    $pdo->prepare('DELETE FROM articles_sections WHERE article_id = :id')->execute(['id' => $articleId]);
+    $pdo->prepare('DELETE FROM articles WHERE id = :id')->execute(['id' => $articleId]);
+}
+
+function evaluation_is_resumable(array $evaluation, int $articleCount): bool
+{
+    $status = (string) ($evaluation['status'] ?? '');
+    if (in_array($status, ['processing', 'failed'], true)) {
+        return true;
+    }
+    if ($status === 'pending') {
+        return (int) ($evaluation['processed_files'] ?? 0) > 0 || $articleCount > 0;
+    }
+    return false;
+}
+
+function resume_interrupted_evaluations(PDO $pdo): int
+{
+    $sql = <<<'SQL'
+        SELECT pe.project_id
+        FROM project_evaluations pe
+        INNER JOIN (
+            SELECT project_id, MAX(id) AS id
+            FROM project_evaluations
+            GROUP BY project_id
+        ) latest ON pe.id = latest.id
+        WHERE pe.status IN ('pending', 'processing', 'failed')
+        SQL;
+    $projectIds = $pdo->query($sql)->fetchAll(PDO::FETCH_COLUMN);
+    $spawned = 0;
+    foreach ($projectIds as $projectId) {
+        $projectId = (int) $projectId;
+        if (is_evaluator_running($projectId)) {
+            continue;
+        }
+        spawn_evaluator($projectId);
+        $spawned++;
+    }
+    return $spawned;
+}
+
 function spawn_evaluator(int $projectId): void
 {
+    if (is_evaluator_running($projectId)) {
+        return;
+    }
+
     $script = __DIR__ . '/../worker/evaluate.php';
     $logDir = projects_path() . '/_logs';
     if (!is_dir($logDir)) {

@@ -59,7 +59,13 @@ services:
 
   ollama:
     image: ollama/ollama
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${OLLAMA_GPU:-0}
+              capabilities: [gpu]
     networks:
       - io_llm_search_engine
     ports:
