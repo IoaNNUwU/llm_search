@@ -484,10 +484,22 @@ function normalize_chat_language(?string $code): string
 function language_system_instruction(string $language): string
 {
     if ($language === 'en') {
-        return 'Always answer in English. Never reply in Chinese or any other language unless the user explicitly asks for that language.';
+        return 'Answer only in English. '
+            . 'The selected response language overrides the language used in the question, conversation history, and documentation excerpts. '
+            . 'Do not use Chinese or any other language.';
     }
 
-    return 'Always answer in Russian (русский язык). Never reply in Chinese or any other language unless the user explicitly asks for that language.';
+    return 'Отвечай только на русском языке. '
+        . 'Выбранный язык ответа имеет приоритет над языком вопроса, истории диалога и фрагментов документации. '
+        . 'Не используй китайский или любой другой язык.';
+}
+
+/**
+ * Detect CJK Unified Ideographs in a generated response.
+ */
+function contains_chinese_characters(string $text): bool
+{
+    return preg_match('/[\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{F900}-\x{FAFF}]/u', $text) === 1;
 }
 
 /**

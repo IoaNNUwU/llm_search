@@ -196,13 +196,32 @@ function chat_handle_post(string $ollamaModel): array
             'messages' => build_ollama_chat_messages($messages, $projectNames, $ragHits, $language),
             'stream' => false,
         ];
-        $data = ollama_request('/api/chat', $payload);
-        if (!isset($data['message']['content'])) {
-            throw new RuntimeException('Unexpected response from Ollama.');
+
+        $assistantContent = null;
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            $data = ollama_request('/api/chat', $payload);
+            if (!isset($data['message']['content']) || !is_string($data['message']['content'])) {
+                throw new RuntimeException('Unexpected response from Ollama.');
+            }
+
+            $assistantContent = $data['message']['content'];
+            if (!contains_chinese_characters($assistantContent)) {
+                break;
+            }
+
+            $correction = $language === 'en'
+                ? 'Your previous response contained Chinese characters. Regenerate the entire answer using English only.'
+                : 'Предыдущий ответ содержал китайские символы. Сгенерируй весь ответ заново, используя только русский язык.';
+            $payload['messages'][0]['content'] .= "\n\n" . $correction;
         }
+
+        if ($assistantContent === null || contains_chinese_characters($assistantContent)) {
+            throw new RuntimeException('Ollama failed to generate a response in the selected language.');
+        }
+
         $assistant = [
             'role' => 'assistant',
-            'content' => (string) $data['message']['content'],
+            'content' => $assistantContent,
         ];
         $refs = references_from_hits($hits);
         if ($refs !== []) {
