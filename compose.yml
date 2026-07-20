@@ -59,6 +59,7 @@ services:
 
   ollama:
     image: ollama/ollama
+    gpus: all
     networks:
       - io_llm_search_engine
     ports:
