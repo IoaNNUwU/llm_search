@@ -656,15 +656,18 @@ main {
 
 .bubble .content a.cite {
     display: inline;
-    margin-left: 0.15em;
-    font-size: 0.85em;
-    line-height: 1;
+    margin-left: 0;
+    font-size: 0.65em;
+    font-weight: 500;
+    line-height: 0;
     text-decoration: none;
-    vertical-align: baseline;
+    vertical-align: super;
+    color: var(--muted);
+    white-space: nowrap;
 }
 
 .bubble .content a.cite:hover {
-    opacity: 0.85;
+    color: var(--accent-hover);
 }
 
 .ref-article-title {

@@ -48,7 +48,7 @@ function linkifyCitations(html, citations) {
         return html;
     }
 
-    return html.replace(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)|\[(\d+)\]/gi, (match, code, num) => {
+    return html.replace(/(<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>)|\s*\[(\d+)\]/gi, (match, code, num) => {
         if (code) {
             return code;
         }
@@ -58,7 +58,7 @@ function linkifyCitations(html, citations) {
         }
         const href = escapeHtml(citation.link);
         const title = escapeHtml(citation.title || `Reference ${num}`);
-        return `<a class="cite" href="${href}" target="_blank" rel="noopener noreferrer" title="${title}">🔗</a>`;
+        return `<a class="cite" href="${href}" target="_blank" rel="noopener noreferrer" title="${title}">[🔗]</a>`;
     });
 }
 

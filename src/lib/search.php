@@ -21,6 +21,21 @@ const RAG_DISTANCE_MAX_RATIO = 1.35;
 const RAG_DISTANCE_ABS_SLACK = 0.05;
 
 /**
+ * Fetch extra vector candidates, then re-rank with lexical boost.
+ */
+const RAG_VECTOR_CANDIDATE_MULT = 3;
+
+/** @var list<string> */
+const RAG_LEXICAL_STOPWORDS = [
+    'какие', 'какой', 'какая', 'какое', 'каким', 'какими', 'каких',
+    'что', 'чем', 'чего', 'это', 'есть', 'как', 'для', 'или', 'при',
+    'про', 'над', 'под', 'без', 'между', 'через', 'после', 'перед',
+    'можно', 'нужно', 'расскажи', 'объясни', 'скажи', 'пожалуйста',
+    'the', 'and', 'for', 'with', 'from', 'what', 'which', 'how', 'are',
+    'is', 'in', 'on', 'of', 'to', 'a', 'an', 'does', 'do', 'about',
+];
+
+/**
  * Load a project row by id, or null if missing.
  *
  * @return array{id:int, name:string, description:string, base_url:string}|null
@@ -132,6 +147,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
 
     $embeddingSql = embedding_to_sql(ollama_embed($query));
     $limit = max(1, min(20, $limit));
+    $candidateLimit = max($limit, min(60, $limit * RAG_VECTOR_CANDIDATE_MULT));
 
     $placeholders = implode(', ', array_fill(0, count($ids), '?'));
     $sql = <<<SQL
@@ -159,7 +175,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
     SQL;
 
     $stmt = $pdo->prepare($sql);
-    $bind = array_merge([$embeddingSql], $ids, [$limit]);
+    $bind = array_merge([$embeddingSql], $ids, [$candidateLimit]);
     foreach ($bind as $i => $value) {
         $param = $i + 1;
         if ($i === count($bind) - 1) {
@@ -186,7 +202,115 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
             'distance' => (float) $row['distance'],
         ];
     }
-    return $out;
+
+    return array_slice(rerank_hits_with_lexical_boost($query, $out), 0, $limit);
+}
+
+/**
+ * Significant query terms / bigrams used for lexical boosting.
+ *
+ * @return array{terms: list<string>, phrases: list<string>}
+ */
+function lexical_query_parts(string $query): array
+{
+    $normalized = mb_strtolower(trim($query), 'UTF-8');
+    $normalized = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $normalized) ?? $normalized;
+    $rawTokens = preg_split('/\s+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+    $stop = array_fill_keys(RAG_LEXICAL_STOPWORDS, true);
+    $terms = [];
+    foreach ($rawTokens as $token) {
+        if (isset($stop[$token]) || mb_strlen($token, 'UTF-8') < 3) {
+            continue;
+        }
+        if (!in_array($token, $terms, true)) {
+            $terms[] = $token;
+        }
+    }
+
+    $phrases = [];
+    for ($i = 0, $n = count($terms) - 1; $i < $n; $i++) {
+        $phrases[] = $terms[$i] . ' ' . $terms[$i + 1];
+    }
+
+    return ['terms' => $terms, 'phrases' => $phrases];
+}
+
+/**
+ * How much to subtract from cosine distance when the query matches title/body text.
+ * Title/phrase hits matter more than incidental body word hits.
+ */
+function lexical_boost_for_hit(array $hit, array $parts): float
+{
+    $title = mb_strtolower(
+        trim((string) ($hit['title'] ?? '')) . ' ' . trim((string) ($hit['article_title'] ?? '')),
+        'UTF-8'
+    );
+    $body = mb_strtolower(
+        trim((string) ($hit['description'] ?? '')) . ' ' . trim((string) ($hit['content'] ?? '')),
+        'UTF-8'
+    );
+    $link = mb_strtolower(rawurldecode((string) ($hit['link'] ?? '')), 'UTF-8');
+
+    $boost = 0.0;
+    foreach ($parts['phrases'] as $phrase) {
+        if ($phrase !== '' && str_contains($title, $phrase)) {
+            $boost += 0.14;
+        } elseif ($phrase !== '' && (str_contains($body, $phrase) || str_contains($link, $phrase))) {
+            $boost += 0.06;
+        }
+    }
+    foreach ($parts['terms'] as $term) {
+        if (str_contains($title, $term)) {
+            $boost += 0.05;
+        } elseif (str_contains($link, $term)) {
+            $boost += 0.03;
+        } elseif (str_contains($body, $term)) {
+            $boost += 0.015;
+        }
+    }
+
+    return min(0.28, $boost);
+}
+
+/**
+ * Re-rank vector hits so strong keyword/title matches beat near-miss semantic neighbors.
+ *
+ * @param list<array<string, mixed>> $hits
+ * @return list<array<string, mixed>>
+ */
+function rerank_hits_with_lexical_boost(string $query, array $hits): array
+{
+    if ($hits === []) {
+        return [];
+    }
+
+    $parts = lexical_query_parts($query);
+    if ($parts['terms'] === []) {
+        return $hits;
+    }
+
+    $scored = [];
+    foreach ($hits as $hit) {
+        $distance = isset($hit['distance']) ? (float) $hit['distance'] : PHP_FLOAT_MAX;
+        $boost = lexical_boost_for_hit($hit, $parts);
+        $hit['rank_score'] = $distance - $boost;
+        $hit['lexical_boost'] = $boost;
+        $scored[] = $hit;
+    }
+
+    usort(
+        $scored,
+        static function (array $a, array $b): int {
+            $cmp = ($a['rank_score'] <=> $b['rank_score']);
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+            return ($a['distance'] <=> $b['distance']);
+        }
+    );
+
+    return $scored;
 }
 
 /**
@@ -202,7 +326,10 @@ function filter_hits_by_top_distance(array $hits): array
         return [];
     }
 
-    $best = isset($hits[0]['distance']) ? (float) $hits[0]['distance'] : 0.0;
+    // Prefer re-ranked score when present so lexical winners stay first.
+    $best = isset($hits[0]['rank_score'])
+        ? (float) $hits[0]['rank_score']
+        : (isset($hits[0]['distance']) ? (float) $hits[0]['distance'] : 0.0);
     if ($best < 0) {
         $best = 0.0;
     }
@@ -211,8 +338,10 @@ function filter_hits_by_top_distance(array $hits): array
 
     $out = [];
     foreach ($hits as $hit) {
-        $distance = isset($hit['distance']) ? (float) $hit['distance'] : PHP_FLOAT_MAX;
-        if ($distance > $cutoff) {
+        $score = isset($hit['rank_score'])
+            ? (float) $hit['rank_score']
+            : (isset($hit['distance']) ? (float) $hit['distance'] : PHP_FLOAT_MAX);
+        if ($score > $cutoff) {
             break;
         }
         $out[] = $hit;
@@ -247,7 +376,9 @@ function references_from_hits(array $hits): array
         }
         $seenLinks[$link] = true;
 
-        $distance = isset($hit['distance']) ? (float) $hit['distance'] : PHP_FLOAT_MAX;
+        $distance = isset($hit['rank_score'])
+            ? (float) $hit['rank_score']
+            : (isset($hit['distance']) ? (float) $hit['distance'] : PHP_FLOAT_MAX);
         $projectName = trim((string) ($hit['project_name'] ?? ''));
         $projectId = (int) ($hit['project_id'] ?? 0);
         $projectKey = $projectId > 0

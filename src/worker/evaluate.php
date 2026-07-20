@@ -158,7 +158,12 @@ try {
 
         $meta = llm_title_description($content, "markdown file {$relPath}");
         assert_not_cancelled($pdo, $evaluationId);
-        $embedding = ollama_embed($meta['title'] . "\n" . $meta['description'] . "\n" . mb_substr($content, 0, 4000, 'UTF-8'));
+        $embedding = ollama_embed(implode("\n", [
+            basename(str_replace('\\', '/', $relPath)),
+            $meta['title'],
+            $meta['description'],
+            mb_substr($content, 0, 4000, 'UTF-8'),
+        ]));
         $link = project_file_link($baseUrl, $relPath);
 
         $insertArticle->execute([
@@ -209,9 +214,13 @@ try {
                 'section' . ($heading ? " «{$heading}»" : '') . " in {$relPath}"
             );
             assert_not_cancelled($pdo, $evaluationId);
-            $sectionEmbed = ollama_embed(
-                $sectionMeta['title'] . "\n" . $sectionMeta['description'] . "\n" . $section['content']
-            );
+            $sectionEmbed = ollama_embed(implode("\n", array_filter([
+                $heading !== null && $heading !== '' ? $heading : null,
+                basename(str_replace('\\', '/', $relPath)),
+                $sectionMeta['title'],
+                $sectionMeta['description'],
+                $section['content'],
+            ], static fn ($part): bool => $part !== null && $part !== '')));
 
             $insertSection->execute([
                 'article_id' => $articleId,
