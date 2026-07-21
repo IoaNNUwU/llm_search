@@ -5,7 +5,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/helpers.php';
 
 /**
- * Split markdown into sections by headers (# ## ### …) or double newlines.
+ * Split markdown into sections by headers (# ## ### …).
+ * Files without headers become a single section.
  *
  * @return list<array{heading: ?string, content: string, anchor: ?string}>
  */
@@ -17,13 +18,7 @@ function split_markdown_sections(string $markdown): array
         return [];
     }
 
-    $hasHeaders = (bool) preg_match('/^#{1,6}\s+\S/m', $markdown);
-
-    if ($hasHeaders) {
-        return split_by_headers($markdown);
-    }
-
-    return split_by_blank_lines($markdown);
+    return split_by_headers($markdown);
 }
 
 /**
@@ -65,49 +60,6 @@ function split_by_headers(string $markdown): array
         $buf[] = $line;
     }
     $flush();
-
-    // Further split oversized header-less preamble / body chunks on blank lines.
-    $expanded = [];
-    foreach ($sections as $section) {
-        if ($section['heading'] !== null || substr_count($section['content'], "\n\n") === 0) {
-            $expanded[] = $section;
-            continue;
-        }
-        foreach (split_by_blank_lines($section['content'], $section['anchor']) as $part) {
-            $expanded[] = $part;
-        }
-    }
-
-    return $expanded;
-}
-
-/**
- * @return list<array{heading: ?string, content: string, anchor: ?string}>
- */
-function split_by_blank_lines(string $markdown, ?string $inheritedAnchor = null): array
-{
-    $parts = preg_split('/\n\s*\n+/', trim($markdown)) ?: [];
-    $sections = [];
-    $lastAnchor = $inheritedAnchor;
-
-    foreach ($parts as $part) {
-        $part = trim($part);
-        if ($part === '') {
-            continue;
-        }
-        $heading = null;
-        $anchor = $lastAnchor;
-        if (preg_match('/^(#{1,6})\s+(.+)$/um', $part, $m)) {
-            $heading = trim($m[2]);
-            $anchor = slugify($heading);
-            $lastAnchor = $anchor;
-        }
-        $sections[] = [
-            'heading' => $heading,
-            'content' => $part,
-            'anchor' => $anchor,
-        ];
-    }
 
     return $sections;
 }

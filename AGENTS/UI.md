@@ -17,7 +17,7 @@ To evaluate uploaded project:
     - link is formed with base_url of a project appending markdown name. During recursive folders evaluation append folder name as well as markdown name e.g. base_url.com/my_folder/my_file_name.md
 
 2. Evaluate each file section and put it in articles_sections table.
-    - sections split from each other by markdown headers # ## ### etc OR double newlines.
+    - sections split from each other by markdown headers # ## ### etc.
     - title and description field should be generated automatically with local LLM.
     - embedding should be stored in `article_embeddings` keyed by model to keep them if model changes.
     - link to each section is a link to the header above it

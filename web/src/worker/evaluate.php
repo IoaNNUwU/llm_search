@@ -374,7 +374,7 @@ try {
                 'heading' => $heading,
                 'message' => $heading
                     ? "Evaluating section «{$heading}»"
-                    : 'Evaluating paragraph/section',
+                    : 'Evaluating section',
                 'text' => $sectionText,
             ]);
 
