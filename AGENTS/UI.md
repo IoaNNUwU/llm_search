@@ -7,6 +7,7 @@ To the left of the chat window I want to see the side-bar with the ability to se
 Project upload section should have:
 - 2 fields name and description that are saved to database.
 - ability to drag and drop folder or select it from you pc.
+- `project type` selector as a set of buttons. See [`PROJECT_TYPES.md`](./PROJECT_TYPES.md) for how uploaded folder is translated to a LINK.
 
 Uploaded projects should be put in local folder on the server and than evaluated in the background. Evaluation progress should be shown in UI. For evaluation you may create additional table in the database.
 

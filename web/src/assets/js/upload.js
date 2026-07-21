@@ -1,12 +1,53 @@
 import { isMarkdownPath, parseJsonResponse } from '/assets/js/utils.js';
 
+function postFormData(url, formData, onProgress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) onProgress(e.loaded, e.total);
+        });
+        xhr.addEventListener('load', () => {
+            resolve({
+                ok: xhr.status >= 200 && xhr.status < 300,
+                status: xhr.status,
+                text: () => Promise.resolve(xhr.responseText),
+            });
+        });
+        xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+        xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+        xhr.send(formData);
+    });
+}
+
 export function initUpload({ addSelectedProjectId, loadProjects, startPolling }) {
     const modal = document.getElementById('upload-modal');
     const dropzone = document.getElementById('dropzone');
     const folderInput = document.getElementById('folder-input');
     const dzFiles = document.getElementById('dz-files');
     const uploadError = document.getElementById('upload-error');
+    const progressWrap = document.getElementById('upload-progress');
+    const progressFill = document.getElementById('upload-progress-fill');
+    const progressLabel = document.getElementById('upload-progress-label');
+    const progressBar = progressWrap?.querySelector('.log-progress-bar');
     let pendingFiles = [];
+
+    function setProgress(pct, label) {
+        const clamped = Math.max(0, Math.min(100, pct));
+        progressFill.style.width = `${clamped}%`;
+        if (progressBar) progressBar.setAttribute('aria-valuenow', String(Math.round(clamped)));
+        progressLabel.textContent = label;
+    }
+
+    function showProgress() {
+        progressWrap.hidden = false;
+        setProgress(0, 'Uploading… 0%');
+    }
+
+    function hideProgress() {
+        progressWrap.hidden = true;
+        setProgress(0, 'Uploading…');
+    }
 
     function setPendingFiles(files) {
         pendingFiles = files.filter((item) => isMarkdownPath(item.path || item.file?.name));
@@ -18,6 +59,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
     function openModal() {
         uploadError.classList.remove('show');
         uploadError.textContent = '';
+        hideProgress();
         document.getElementById('upload-form').reset();
         pendingFiles = [];
         dzFiles.textContent = '';
@@ -26,6 +68,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
     }
 
     function closeModal() {
+        hideProgress();
         modal.classList.remove('open');
     }
 
@@ -124,6 +167,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
         const submitBtn = document.getElementById('upload-submit');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Uploading…';
+        showProgress();
 
         const formData = new FormData();
         formData.append('name', document.getElementById('proj-name').value.trim());
@@ -136,7 +180,11 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
         });
 
         try {
-            const res = await fetch('api/upload.php', { method: 'POST', body: formData });
+            const res = await postFormData('api/upload.php', formData, (loaded, total) => {
+                const pct = total ? (loaded / total) * 100 : 0;
+                setProgress(pct, `Uploading… ${Math.round(pct)}%`);
+            });
+            setProgress(100, 'Processing…');
             const data = await parseJsonResponse(res);
             if (!res.ok) throw new Error(data.error || 'Upload failed');
             addSelectedProjectId(data.project_id);
@@ -144,6 +192,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
             await loadProjects();
             startPolling();
         } catch (err) {
+            hideProgress();
             uploadError.textContent = err.message;
             uploadError.classList.add('show');
         } finally {

@@ -22,6 +22,12 @@
                 <div class="dz-files" id="dz-files"></div>
             </div>
             <input type="file" id="folder-input" webkitdirectory multiple hidden>
+            <div class="upload-progress" id="upload-progress" hidden>
+                <div class="log-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <span id="upload-progress-fill"></span>
+                </div>
+                <div class="log-progress-label" id="upload-progress-label">Uploading…</div>
+            </div>
             <div class="modal-actions">
                 <button type="button" class="secondary" id="upload-cancel">Cancel</button>
                 <button type="submit" class="primary" id="upload-submit">Upload &amp; evaluate</button>
