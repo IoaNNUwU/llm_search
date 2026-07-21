@@ -158,7 +158,9 @@ function findCurrentFileMeta(events, data) {
             };
         }
     }
-    const processed = Number(data.processed_files || 0);
+    const processed = data.current_phase === 'ingest'
+        ? Number(data.searchable_files || 0)
+        : Number(data.processed_files || 0);
     const total = Number(data.total_files || 0);
     if (total > 0) {
         return {
@@ -185,13 +187,17 @@ function buildUnindexedQueue(data, events) {
     const phase = data.current_phase;
     const currentFile = data.current_file || '';
 
-    if (phase === 'file' || phase === 'section') {
+    if (phase === 'ingest' || phase === 'embed' || phase === 'file' || phase === 'section') {
         queue.push({
             kind: phase,
             status: 'current',
-            title: phase === 'file'
-                ? 'Индексация файла'
-                : (heading ? `Секция «${heading}»` : 'Индексация секции'),
+            title: phase === 'ingest'
+                ? 'Добавление в полнотекстовый поиск'
+                : (phase === 'embed'
+                    ? 'Финальная векторная индексация'
+                    : (phase === 'file'
+                        ? 'Индексация файла'
+                        : (heading ? `Секция «${heading}»` : 'Индексация секции'))),
             file: currentFile,
             heading,
             section_index: data.current_section || null,
@@ -218,7 +224,10 @@ function buildUnindexedQueue(data, events) {
 
     const files = Array.isArray(data.files) ? data.files : [];
     const fileTotal = fileMeta.file_total || Number(data.total_files || 0) || files.length;
-    const fileIndex = fileMeta.file_index || Number(data.processed_files || 0) + 1;
+    const completedForPhase = phase === 'ingest'
+        ? Number(data.searchable_files || 0)
+        : Number(data.processed_files || 0);
+    const fileIndex = fileMeta.file_index || completedForPhase + 1;
     if (fileTotal > 0 && fileIndex > 0) {
         const remainingFiles = fileTotal - fileIndex;
         if (remainingFiles > 0) {
@@ -320,6 +329,7 @@ export function initEvalLog() {
     const logStatusBar = document.getElementById('log-status-bar');
     const logLiveIndicator = document.getElementById('log-live-indicator');
     const logElapsedEl = document.getElementById('log-elapsed');
+    const logProgressSearchable = document.getElementById('log-progress-searchable');
     const logProgressFill = document.getElementById('log-progress-fill');
     const logProgressLabel = document.getElementById('log-progress-label');
     const logProgressBar = logStatusBar?.querySelector('.log-progress-bar');
@@ -364,7 +374,7 @@ export function initEvalLog() {
 
         const isActive = lastLogData.status === 'processing' || lastLogData.status === 'pending';
         if (logStepElapsed) {
-            if (isActive && stepStartedAt && (lastLogData.current_phase === 'file' || lastLogData.current_phase === 'section')) {
+            if (isActive && stepStartedAt && ['ingest', 'embed', 'file', 'section'].includes(lastLogData.current_phase)) {
                 const stepSec = (now - stepStartedAt.getTime()) / 1000;
                 const target = lastLogData.current_phase === 'section' ? 'секция' : 'файл';
                 logStepElapsed.textContent = `Текущий ${target}: ${formatDuration(stepSec)}`;
@@ -378,7 +388,8 @@ export function initEvalLog() {
         if (!logCurrentEl) return;
 
         const phase = data.current_phase;
-        const isActive = data.status === 'processing' && (phase === 'file' || phase === 'section');
+        const isActive = data.status === 'processing'
+            && ['ingest', 'embed', 'file', 'section'].includes(phase);
 
         if (isActive) {
             logCurrentEl.hidden = false;
@@ -396,13 +407,20 @@ export function initEvalLog() {
 
         logCurrentBadges?.replaceChildren();
 
-        if (phase === 'file') {
-            if (label) label.textContent = 'Сейчас индексируется файл';
-            const fileEv = events.findLast((ev) => ev.phase === 'file' && ev.file === data.current_file);
+        if (phase === 'ingest' || phase === 'embed' || phase === 'file') {
+            if (label) {
+                label.textContent = phase === 'ingest'
+                    ? 'Сейчас добавляется в полнотекстовый поиск'
+                    : (phase === 'embed' ? 'Сейчас создаётся финальный индекс' : 'Сейчас индексируется файл');
+            }
+            const fileEv = events.findLast((ev) => ev.phase === phase && ev.file === data.current_file);
             if (fileEv?.file_index && fileEv.file_total) {
                 logCurrentBadges?.append(makeBadge(`Файл ${fileEv.file_index}/${fileEv.file_total}`, 'log-badge-file'));
             } else if (data.processed_files != null && data.total_files) {
-                logCurrentBadges?.append(makeBadge(`Файл ~${data.processed_files + 1}/${data.total_files}`, 'log-badge-file'));
+                const completed = phase === 'ingest'
+                    ? Number(data.searchable_files || 0)
+                    : Number(data.processed_files || 0);
+                logCurrentBadges?.append(makeBadge(`Файл ~${completed + 1}/${data.total_files}`, 'log-badge-file'));
             }
             if (path) path.textContent = data.current_file || '—';
         } else {
@@ -486,18 +504,26 @@ export function initEvalLog() {
         lastLogData = data;
         const status = data.status || '—';
         const pct = data.percent ?? 0;
+        const searchablePct = data.searchable_percent ?? 0;
         const isActive = status === 'processing' || status === 'pending';
 
         if (logMetaEl) {
-            logMetaEl.textContent = `${data.project_name || 'Project'} · ${status} · ${data.processed_files || 0}/${data.total_files || 0} markdown files`;
+            logMetaEl.textContent = `${data.project_name || 'Project'} · ${status} · полнотекстовый поиск ${data.searchable_files || 0}/${data.total_files || 0} · финальный индекс ${data.processed_files || 0}/${data.total_files || 0}`;
         }
 
         if (logStatusBar) logStatusBar.hidden = false;
         if (logLiveIndicator) logLiveIndicator.hidden = !isActive;
+        if (logProgressSearchable) logProgressSearchable.style.width = `${searchablePct}%`;
         if (logProgressFill) logProgressFill.style.width = `${pct}%`;
         if (logProgressBar) logProgressBar.setAttribute('aria-valuenow', String(pct));
+        if (logProgressBar) {
+            logProgressBar.setAttribute(
+                'aria-valuetext',
+                `Полнотекстовый поиск ${searchablePct}%, финальный индекс ${pct}%`,
+            );
+        }
         if (logProgressLabel) {
-            logProgressLabel.textContent = `${pct}% · проиндексировано ${data.processed_files || 0} из ${data.total_files || 0} файлов`;
+            logProgressLabel.textContent = `Полнотекстовый поиск: ${searchablePct}% (${data.searchable_files || 0}/${data.total_files || 0}) · Финальный индекс: ${pct}% (${data.processed_files || 0}/${data.total_files || 0})`;
         }
 
         const events = data.events || [];

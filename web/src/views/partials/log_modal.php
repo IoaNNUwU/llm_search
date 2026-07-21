@@ -16,7 +16,8 @@
                 <span class="log-elapsed" id="log-elapsed"></span>
             </div>
             <div class="log-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
-                <span id="log-progress-fill"></span>
+                <span class="log-progress-searchable" id="log-progress-searchable"></span>
+                <span class="log-progress-indexed" id="log-progress-fill"></span>
             </div>
             <div class="log-progress-label" id="log-progress-label"></div>
         </div>

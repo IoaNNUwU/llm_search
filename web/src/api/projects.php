@@ -17,6 +17,7 @@ try {
             p.project_type,
             e.status AS eval_status,
             e.total_files,
+            e.searchable_files,
             e.processed_files,
             e.current_file,
             e.current_phase,
@@ -38,8 +39,12 @@ try {
     $rows = $pdo->query($sql)->fetchAll();
     $projects = array_map(static function (array $row): array {
         $total = (int) ($row['total_files'] ?? 0);
+        $searchable = (int) ($row['searchable_files'] ?? 0);
         $done = (int) ($row['processed_files'] ?? 0);
         $percent = $total > 0 ? (int) round(($done / $total) * 100) : ($row['eval_status'] === 'completed' ? 100 : 0);
+        $searchablePercent = $total > 0
+            ? (int) round(($searchable / $total) * 100)
+            : ($row['eval_status'] === 'completed' ? 100 : 0);
 
         return [
             'id' => (int) $row['id'],
@@ -50,6 +55,7 @@ try {
             'evaluation' => [
                 'status' => $row['eval_status'] ?? 'unknown',
                 'total_files' => $total,
+                'searchable_files' => $searchable,
                 'processed_files' => $done,
                 'current_file' => $row['current_file'],
                 'current_phase' => $row['current_phase'],
@@ -57,6 +63,7 @@ try {
                 'total_sections' => $row['total_sections'] !== null ? (int) $row['total_sections'] : null,
                 'error' => $row['eval_error'],
                 'percent' => $percent,
+                'searchable_percent' => $searchablePercent,
                 'updated_at' => $row['eval_updated_at'],
             ],
         ];

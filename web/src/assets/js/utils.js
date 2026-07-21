@@ -23,7 +23,10 @@ export function statusLabel(ev) {
     if (!ev) return '';
     switch (ev.status) {
         case 'pending': return 'queued';
-        case 'processing': return `${ev.percent}%`;
+        case 'processing':
+            return ev.current_phase === 'ingest'
+                ? `search ${ev.searchable_percent || 0}%`
+                : `${ev.percent || 0}%`;
         case 'completed': return 'done';
         case 'failed': return 'failed';
         case 'cancelled': return 'cancelled';

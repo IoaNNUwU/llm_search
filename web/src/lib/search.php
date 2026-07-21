@@ -145,15 +145,15 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
         return [];
     }
 
-    $embeddingSql = embedding_to_sql(ollama_embed($query));
-    $embedModel = ollama_embed_model();
     $limit = max(1, min(20, $limit));
     $candidateLimit = max($limit, min(60, $limit * RAG_VECTOR_CANDIDATE_MULT));
-
     $placeholders = implode(', ', array_fill(0, count($ids), '?'));
-    $sql = <<<SQL
+
+    // Full-text retrieval works as soon as the ingest phase commits a file and
+    // never requires Ollama.
+    $ftsSql = <<<SQL
         WITH q AS (
-            SELECT CAST(? AS vector) AS v
+            SELECT websearch_to_tsquery('simple'::regconfig, ?) AS v
         )
         SELECT
             s.id,
@@ -165,47 +165,137 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
             a.link AS article_link,
             a.project_id,
             p.name AS project_name,
-            (e.embedding <=> q.v) AS distance
+            ts_rank_cd(s.search_vector, q.v) AS fts_rank
         FROM articles_sections s
-        INNER JOIN article_section_embeddings e ON e.section_id = s.id AND e.model = ?
         INNER JOIN articles a ON a.id = s.article_id
         INNER JOIN projects p ON p.id = a.project_id
         CROSS JOIN q
         WHERE a.project_id IN ({$placeholders})
-        ORDER BY e.embedding <=> q.v
+          AND s.search_vector @@ q.v
+        ORDER BY fts_rank DESC, s.id
         LIMIT ?
     SQL;
 
-    $stmt = $pdo->prepare($sql);
-    $bind = array_merge([$embeddingSql, $embedModel], $ids, [$candidateLimit]);
-    foreach ($bind as $i => $value) {
-        $param = $i + 1;
-        if ($i === count($bind) - 1) {
-            $stmt->bindValue($param, (int) $value, PDO::PARAM_INT);
-        } else {
-            $stmt->bindValue($param, $value);
+    $ftsStmt = $pdo->prepare($ftsSql);
+    $ftsStmt->execute(array_merge([$query], $ids, [$candidateLimit]));
+    $lexicalHits = [];
+    foreach ($ftsStmt->fetchAll() as $row) {
+        $rank = max(0.0, (float) $row['fts_rank']);
+        $lexicalHits[] = section_search_hit($row, 1.0 / (1.0 + $rank), $rank);
+    }
+
+    // Do not call Ollama while only full-text-searchable files exist.
+    $embedModel = ollama_embed_model();
+    $hasVectorSql = <<<SQL
+        SELECT 1
+        FROM article_section_embeddings e
+        INNER JOIN articles_sections s ON s.id = e.section_id
+        INNER JOIN articles a ON a.id = s.article_id
+        WHERE a.project_id IN ({$placeholders}) AND e.model = ?
+        LIMIT 1
+    SQL;
+    $hasVectorStmt = $pdo->prepare($hasVectorSql);
+    $hasVectorStmt->execute(array_merge($ids, [$embedModel]));
+
+    $vectorHits = [];
+    if ($hasVectorStmt->fetchColumn()) {
+        $embeddingSql = embedding_to_sql(ollama_embed($query));
+        $vectorSql = <<<SQL
+            WITH q AS (
+                SELECT CAST(? AS vector) AS v
+            )
+            SELECT
+                s.id,
+                COALESCE(NULLIF(TRIM(s.title), ''), a.title) AS title,
+                COALESCE(s.description, '') AS description,
+                s.content,
+                s.link,
+                a.title AS article_title,
+                a.link AS article_link,
+                a.project_id,
+                p.name AS project_name,
+                (e.embedding <=> q.v) AS distance
+            FROM articles_sections s
+            INNER JOIN article_section_embeddings e ON e.section_id = s.id AND e.model = ?
+            INNER JOIN articles a ON a.id = s.article_id
+            INNER JOIN projects p ON p.id = a.project_id
+            CROSS JOIN q
+            WHERE a.project_id IN ({$placeholders})
+            ORDER BY e.embedding <=> q.v
+            LIMIT ?
+        SQL;
+        $vectorStmt = $pdo->prepare($vectorSql);
+        $vectorStmt->execute(array_merge([$embeddingSql, $embedModel], $ids, [$candidateLimit]));
+        foreach ($vectorStmt->fetchAll() as $row) {
+            $vectorHits[] = section_search_hit($row, (float) $row['distance']);
+        }
+        $vectorHits = rerank_hits_with_lexical_boost($query, $vectorHits);
+    }
+
+    return merge_section_search_hits($lexicalHits, $vectorHits, $limit);
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function section_search_hit(array $row, float $distance, ?float $ftsRank = null): array
+{
+    $hit = [
+        'id' => (int) $row['id'],
+        'title' => (string) $row['title'],
+        'description' => (string) $row['description'],
+        'content' => (string) $row['content'],
+        'link' => (string) $row['link'],
+        'article_title' => (string) $row['article_title'],
+        'article_link' => (string) $row['article_link'],
+        'project_id' => (int) $row['project_id'],
+        'project_name' => (string) $row['project_name'],
+        'distance' => $distance,
+    ];
+    if ($ftsRank !== null) {
+        $hit['fts_rank'] = $ftsRank;
+    }
+    return $hit;
+}
+
+/**
+ * Merge independent full-text and vector rankings with reciprocal rank fusion.
+ *
+ * @param list<array<string, mixed>> $lexicalHits
+ * @param list<array<string, mixed>> $vectorHits
+ * @return list<array<string, mixed>>
+ */
+function merge_section_search_hits(array $lexicalHits, array $vectorHits, int $limit): array
+{
+    $merged = [];
+    foreach ([$lexicalHits, $vectorHits] as $sourceIndex => $hits) {
+        foreach ($hits as $rank => $hit) {
+            $id = (int) $hit['id'];
+            if (!isset($merged[$id])) {
+                $merged[$id] = [
+                    'hit' => $hit,
+                    'score' => 0.0,
+                    'sources' => [],
+                ];
+            } elseif ($sourceIndex === 1) {
+                $merged[$id]['hit']['distance'] = $hit['distance'];
+                $merged[$id]['hit']['lexical_boost'] = $hit['lexical_boost'] ?? 0.0;
+            }
+            $merged[$id]['score'] += 1.0 / (60 + $rank + 1);
+            $merged[$id]['sources'][] = $sourceIndex === 0 ? 'fulltext' : 'vector';
         }
     }
-    $stmt->execute();
 
-    $rows = $stmt->fetchAll();
     $out = [];
-    foreach ($rows as $row) {
-        $out[] = [
-            'id' => (int) $row['id'],
-            'title' => (string) $row['title'],
-            'description' => (string) $row['description'],
-            'content' => (string) $row['content'],
-            'link' => (string) $row['link'],
-            'article_title' => (string) $row['article_title'],
-            'article_link' => (string) $row['article_link'],
-            'project_id' => (int) $row['project_id'],
-            'project_name' => (string) $row['project_name'],
-            'distance' => (float) $row['distance'],
-        ];
+    foreach ($merged as $item) {
+        $hit = $item['hit'];
+        $hit['hybrid_score'] = $item['score'];
+        $hit['rank_score'] = -$item['score'];
+        $hit['search_sources'] = array_values(array_unique($item['sources']));
+        $out[] = $hit;
     }
-
-    return array_slice(rerank_hits_with_lexical_boost($query, $out), 0, $limit);
+    usort($out, static fn (array $a, array $b): int => $a['rank_score'] <=> $b['rank_score']);
+    return array_slice($out, 0, $limit);
 }
 
 /**

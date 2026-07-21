@@ -49,9 +49,14 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
             if (ev.status === 'processing' || ev.status === 'pending') {
                 const bar = document.createElement('div');
                 bar.className = 'eval-bar';
-                const fill = document.createElement('span');
-                fill.style.width = (ev.percent || 0) + '%';
-                bar.append(fill);
+                bar.title = `Полнотекстовый поиск: ${ev.searchable_files || 0}/${ev.total_files || 0}; финальный индекс: ${ev.processed_files || 0}/${ev.total_files || 0}`;
+                const searchableFill = document.createElement('span');
+                searchableFill.className = 'eval-bar-searchable';
+                searchableFill.style.width = (ev.searchable_percent || 0) + '%';
+                const indexedFill = document.createElement('span');
+                indexedFill.className = 'eval-bar-indexed';
+                indexedFill.style.width = (ev.percent || 0) + '%';
+                bar.append(searchableFill, indexedFill);
                 item.append(bar);
 
                 if (ev.current_file) {

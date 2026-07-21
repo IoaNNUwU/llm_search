@@ -26,6 +26,9 @@ final class EvaluationCancelledException extends RuntimeException
 {
 }
 
+const INGEST_BATCH_MAX_FILES = 50;
+const INGEST_BATCH_MAX_BYTES = 16 * 1024 * 1024;
+
 $pdo = db();
 
 $project = $pdo->prepare('SELECT * FROM projects WHERE id = :id');
@@ -81,6 +84,41 @@ function detail_preview(string $text, int $max = 4000): string
         return $text;
     }
     return mb_substr($text, 0, $max, 'UTF-8') . "\n…";
+}
+
+/**
+ * Keep transactions bounded by both file count and source size.
+ *
+ * @param list<array{rel_path: string, file_index: int}> $entries
+ * @return list<list<array{rel_path: string, file_index: int}>>
+ */
+function build_ingest_batches(array $entries, string $storageDir): array
+{
+    $batches = [];
+    $batch = [];
+    $batchBytes = 0;
+
+    foreach ($entries as $entry) {
+        $size = filesize($storageDir . '/' . $entry['rel_path']);
+        $size = $size === false ? 0 : max(0, (int) $size);
+        $wouldOverflow = $batch !== [] && (
+            count($batch) >= INGEST_BATCH_MAX_FILES
+            || $batchBytes + $size > INGEST_BATCH_MAX_BYTES
+        );
+        if ($wouldOverflow) {
+            $batches[] = $batch;
+            $batch = [];
+            $batchBytes = 0;
+        }
+
+        $batch[] = $entry;
+        $batchBytes += $size;
+    }
+
+    if ($batch !== []) {
+        $batches[] = $batch;
+    }
+    return $batches;
 }
 
 function article_embed_text(string $relPath, string $title, string $description, string $content): string
@@ -220,6 +258,41 @@ function find_article_id_by_link(PDO $pdo, int $projectId, string $link): ?int
     return $id === false ? null : (int) $id;
 }
 
+/**
+ * @return array<string, true>
+ */
+function fetch_fully_indexed_article_links(PDO $pdo, int $projectId, string $model): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT a.link
+         FROM articles a
+         WHERE a.project_id = :project_id
+           AND EXISTS (
+               SELECT 1
+               FROM article_embeddings ae
+               WHERE ae.article_id = a.id AND ae.model = :article_model
+           )
+           AND NOT EXISTS (
+               SELECT 1
+               FROM articles_sections s
+               LEFT JOIN article_section_embeddings se
+                 ON se.section_id = s.id AND se.model = :section_model
+               WHERE s.article_id = a.id AND se.id IS NULL
+           )'
+    );
+    $stmt->execute([
+        'project_id' => $projectId,
+        'article_model' => $model,
+        'section_model' => $model,
+    ]);
+
+    $links = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $link) {
+        $links[(string) $link] = true;
+    }
+    return $links;
+}
+
 try {
     if (($evaluation['status'] ?? '') === 'cancelled') {
         throw new EvaluationCancelledException('Evaluation cancelled');
@@ -229,48 +302,44 @@ try {
         throw new RuntimeException("Project storage missing: {$storageDir}");
     }
 
-    $articleCountStmt = $pdo->prepare('SELECT COUNT(*) FROM articles WHERE project_id = :id');
-    $articleCountStmt->execute(['id' => $projectId]);
-    $articleCount = (int) $articleCountStmt->fetchColumn();
-    $resume = evaluation_is_resumable($evaluation, $articleCount);
-
     $files = collect_markdown_files($storageDir, $projectType);
     $baseUrl = (string) $row['base_url'];
     $fileTotal = count($files);
     $embedModel = ollama_embed_model();
-
-    if ($resume) {
-        $currentFile = trim((string) ($evaluation['current_file'] ?? ''));
-        if ($currentFile !== '') {
-            delete_articles_for_file($pdo, $projectId, $projectType, $baseUrl, $currentFile);
+    $searchableLinks = fetch_indexed_article_links($pdo, $projectId);
+    $fullyIndexedLinks = fetch_fully_indexed_article_links($pdo, $projectId, $embedModel);
+    $searchable = 0;
+    $processed = 0;
+    foreach ($files as $relPath) {
+        $link = $projectType->articleLink($baseUrl, $relPath);
+        if (isset($searchableLinks[$link])) {
+            $searchable++;
         }
+        if (isset($fullyIndexedLinks[$link])) {
+            $processed++;
+        }
+    }
+
+    if ($searchable > 0 || $processed > 0) {
         append_evaluation_event($projectId, [
             'phase' => 'resume',
-            'message' => 'Resuming interrupted evaluation',
+            'message' => 'Resuming project indexing',
             'text' => null,
         ]);
     } else {
         reset_evaluation_events($projectId);
     }
 
-    $indexedLinks = fetch_indexed_article_links($pdo, $projectId);
-
-    $processed = 0;
-    foreach ($files as $relPath) {
-        if (is_file_indexed($indexedLinks, $projectType, $baseUrl, $relPath)) {
-            $processed++;
-        }
-    }
-
     update_evaluation($pdo, $evaluationId, [
         'status' => 'processing',
         'total_files' => $fileTotal,
+        'searchable_files' => $searchable,
         'processed_files' => $processed,
         'current_file' => null,
-        'current_phase' => null,
+        'current_phase' => 'ingest',
         'current_section' => null,
         'total_sections' => null,
-        'current_detail' => null,
+        'current_detail' => 'Preparing files for full-text search',
         'error' => null,
     ]);
 
@@ -284,178 +353,166 @@ try {
          VALUES (:article_id, :title, :description, :content, :link)
          RETURNING id'
     );
-    $insertArticleEmbed = $pdo->prepare(
-        'INSERT INTO article_embeddings (article_id, model, embedding)
-         VALUES (:article_id, :model, CAST(:embedding AS vector))
-         ON CONFLICT (article_id, model) DO NOTHING'
-    );
-    $insertSectionEmbed = $pdo->prepare(
-        'INSERT INTO article_section_embeddings (section_id, model, embedding)
-         VALUES (:section_id, :model, CAST(:embedding AS vector))
-         ON CONFLICT (section_id, model) DO NOTHING'
-    );
 
+    // Phase 1: prepare Markdown outside a transaction, then commit bounded
+    // batches. Every committed batch becomes immediately available to FTS.
+    $pendingIngest = [];
+    foreach ($files as $fileIndex => $relPath) {
+        $link = $projectType->articleLink($baseUrl, $relPath);
+        if (isset($searchableLinks[$link])) {
+            continue;
+        }
+        $pendingIngest[] = [
+            'rel_path' => $relPath,
+            'file_index' => $fileIndex,
+        ];
+    }
+
+    $ingestBatches = build_ingest_batches($pendingIngest, $storageDir);
+    $ingestBatchTotal = count($ingestBatches);
+    foreach ($ingestBatches as $batchIndex => $batch) {
+        assert_not_cancelled($pdo, $evaluationId);
+
+        $firstEntry = $batch[0];
+        $lastEntry = $batch[count($batch) - 1];
+        $firstFileNumber = $firstEntry['file_index'] + 1;
+        $lastFileNumber = $lastEntry['file_index'] + 1;
+        $batchNumber = $batchIndex + 1;
+        $batchLabel = "Batch {$batchNumber}/{$ingestBatchTotal}: files {$firstFileNumber}–{$lastFileNumber}";
+        update_evaluation($pdo, $evaluationId, [
+            'current_file' => $firstEntry['rel_path'],
+            'current_phase' => 'ingest',
+            'current_section' => null,
+            'total_sections' => null,
+            'current_detail' => $batchLabel,
+        ]);
+        append_evaluation_event($projectId, [
+            'phase' => 'ingest',
+            'file' => $firstEntry['rel_path'],
+            'file_index' => $firstFileNumber,
+            'file_total' => $fileTotal,
+            'batch_index' => $batchNumber,
+            'batch_total' => $ingestBatchTotal,
+            'batch_files' => count($batch),
+            'message' => "Adding {$firstFileNumber}–{$lastFileNumber} to full-text search",
+            'text' => null,
+        ]);
+
+        $preparedFiles = [];
+        $batchSectionTotal = 0;
+        foreach ($batch as $entry) {
+            assert_not_cancelled($pdo, $evaluationId);
+            $relPath = $entry['rel_path'];
+            $content = file_get_contents($storageDir . '/' . $relPath);
+            if ($content === false) {
+                throw new RuntimeException("Cannot read {$relPath}");
+            }
+
+            $sections = split_markdown_sections($content);
+            $preferredTitle = $sections[0]['heading'] ?? pathinfo($relPath, PATHINFO_FILENAME);
+            $sectionMetas = [];
+            foreach ($sections as $section) {
+                $sectionMetas[] = heuristic_title_description($section['content'], $section['heading']);
+            }
+            $batchSectionTotal += count($sections);
+            $preparedFiles[] = [
+                'rel_path' => $relPath,
+                'link' => $projectType->articleLink($baseUrl, $relPath),
+                'meta' => heuristic_title_description($content, $preferredTitle),
+                'sections' => $sections,
+                'section_metas' => $sectionMetas,
+            ];
+        }
+
+        assert_not_cancelled($pdo, $evaluationId);
+        $pdo->beginTransaction();
+        try {
+            foreach ($preparedFiles as $prepared) {
+                $insertArticle->execute([
+                    'project_id' => $projectId,
+                    'title' => $prepared['meta']['title'],
+                    'description' => $prepared['meta']['description'],
+                    'link' => $prepared['link'],
+                ]);
+                $articleId = (int) $insertArticle->fetchColumn();
+
+                $lastAnchor = null;
+                foreach ($prepared['sections'] as $sectionIndex => $section) {
+                    if ($section['anchor'] !== null) {
+                        $lastAnchor = $section['anchor'];
+                    }
+                    $anchor = $section['anchor'] ?? $lastAnchor;
+                    $sectionMeta = $prepared['section_metas'][$sectionIndex];
+                    $insertSection->execute([
+                        'article_id' => $articleId,
+                        'title' => $sectionMeta['title'],
+                        'description' => $sectionMeta['description'],
+                        'content' => $section['content'],
+                        'link' => section_link($prepared['link'], $anchor),
+                    ]);
+                }
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        $searchable += count($preparedFiles);
+        foreach ($preparedFiles as $prepared) {
+            $searchableLinks[$prepared['link']] = true;
+        }
+        update_evaluation($pdo, $evaluationId, [
+            'searchable_files' => $searchable,
+            'current_file' => $lastEntry['rel_path'],
+            'total_sections' => $batchSectionTotal,
+            'current_detail' => "{$batchLabel} committed",
+        ]);
+    }
+
+    // Phase 2: enrich searchable files with embeddings. Full-text search remains
+    // available while this slower phase is running.
     foreach ($files as $fileIndex => $relPath) {
         assert_not_cancelled($pdo, $evaluationId);
 
         $link = $projectType->articleLink($baseUrl, $relPath);
-        $existingArticleId = find_article_id_by_link($pdo, $projectId, $link);
-        if ($existingArticleId !== null) {
-            update_evaluation($pdo, $evaluationId, [
-                'current_file' => $relPath,
-                'current_phase' => 'embed',
-                'current_section' => null,
-                'total_sections' => null,
-                'current_detail' => "Ensuring embeddings for model {$embedModel}",
-            ]);
-            append_evaluation_event($projectId, [
-                'phase' => 'file',
-                'file' => $relPath,
-                'file_index' => $fileIndex + 1,
-                'file_total' => $fileTotal,
-                'message' => 'Already indexed — ensuring embeddings',
-                'text' => null,
-            ]);
-            ensure_embeddings_for_article(
-                $pdo,
-                $existingArticleId,
-                $relPath,
-                $embedModel,
-                static fn () => assert_not_cancelled($pdo, $evaluationId)
-            );
-            update_evaluation($pdo, $evaluationId, [
-                'processed_files' => $processed,
-            ]);
+        if (isset($fullyIndexedLinks[$link])) {
             continue;
         }
 
-        $fullPath = $storageDir . '/' . $relPath;
-        $content = file_get_contents($fullPath);
-        if ($content === false) {
-            throw new RuntimeException("Cannot read {$relPath}");
-        }
-
-        $filePreview = detail_preview($content);
-        update_evaluation($pdo, $evaluationId, [
-            'current_file' => $relPath,
-            'current_phase' => 'file',
-            'current_section' => null,
-            'total_sections' => null,
-            'current_detail' => $filePreview,
-        ]);
-        append_evaluation_event($projectId, [
-            'phase' => 'file',
-            'file' => $relPath,
-            'file_index' => $fileIndex + 1,
-            'file_total' => $fileTotal,
-            'message' => 'Evaluating whole file',
-            'text' => $filePreview,
-        ]);
-
-        $meta = llm_title_description($content, "markdown file {$relPath}");
-        assert_not_cancelled($pdo, $evaluationId);
-
-        $sections = split_markdown_sections($content);
-        $sectionTotal = count($sections);
-        $sectionMetas = [];
-        $embedTexts = [
-            article_embed_text($relPath, $meta['title'], $meta['description'], $content),
-        ];
-        foreach ($sections as $section) {
-            $sectionMeta = heuristic_title_description($section['content'], $section['heading']);
-            $sectionMetas[] = $sectionMeta;
-            $embedTexts[] = section_embed_text(
-                $relPath,
-                $section['heading'],
-                $sectionMeta['title'],
-                $sectionMeta['description'],
-                $section['content']
-            );
+        $articleId = find_article_id_by_link($pdo, $projectId, $link);
+        if ($articleId === null) {
+            continue;
         }
 
         update_evaluation($pdo, $evaluationId, [
             'current_file' => $relPath,
             'current_phase' => 'embed',
             'current_section' => null,
-            'total_sections' => $sectionTotal,
-            'current_detail' => "Embedding {$sectionTotal} section(s) in batch",
+            'total_sections' => null,
+            'current_detail' => "Creating embeddings for model {$embedModel}",
         ]);
         append_evaluation_event($projectId, [
             'phase' => 'embed',
             'file' => $relPath,
             'file_index' => $fileIndex + 1,
             'file_total' => $fileTotal,
-            'message' => "Batch embedding file + {$sectionTotal} section(s)",
+            'message' => 'Creating final vector index',
             'text' => null,
         ]);
 
-        assert_not_cancelled($pdo, $evaluationId);
-        $embeddings = ollama_embed_batch($embedTexts);
-        $articleEmbedding = $embeddings[0];
-        $sectionEmbeddings = array_slice($embeddings, 1);
-
-        $insertArticle->execute([
-            'project_id' => $projectId,
-            'title' => $meta['title'],
-            'description' => $meta['description'],
-            'link' => $link,
-        ]);
-        $articleId = (int) $insertArticle->fetchColumn();
-        $insertArticleEmbed->execute([
-            'article_id' => $articleId,
-            'model' => $embedModel,
-            'embedding' => embedding_to_sql($articleEmbedding),
-        ]);
-
-        $lastAnchor = null;
-        foreach ($sections as $sectionIndex => $section) {
-            assert_not_cancelled($pdo, $evaluationId);
-
-            if ($section['anchor'] !== null) {
-                $lastAnchor = $section['anchor'];
-            }
-            $anchor = $section['anchor'] ?? $lastAnchor;
-            $sectionText = detail_preview($section['content']);
-            $heading = $section['heading'];
-            $sectionMeta = $sectionMetas[$sectionIndex];
-
-            update_evaluation($pdo, $evaluationId, [
-                'current_file' => $relPath,
-                'current_phase' => 'section',
-                'current_section' => $sectionIndex + 1,
-                'total_sections' => $sectionTotal,
-                'current_detail' => $sectionText,
-            ]);
-            append_evaluation_event($projectId, [
-                'phase' => 'section',
-                'file' => $relPath,
-                'file_index' => $fileIndex + 1,
-                'file_total' => $fileTotal,
-                'section_index' => $sectionIndex + 1,
-                'section_total' => $sectionTotal,
-                'heading' => $heading,
-                'message' => $heading
-                    ? "Saving section «{$heading}»"
-                    : 'Saving section',
-                'text' => $sectionText,
-            ]);
-
-            $insertSection->execute([
-                'article_id' => $articleId,
-                'title' => $sectionMeta['title'],
-                'description' => $sectionMeta['description'],
-                'content' => $section['content'],
-                'link' => section_link($link, $anchor),
-            ]);
-            $sectionId = (int) $insertSection->fetchColumn();
-            $insertSectionEmbed->execute([
-                'section_id' => $sectionId,
-                'model' => $embedModel,
-                'embedding' => embedding_to_sql($sectionEmbeddings[$sectionIndex]),
-            ]);
-        }
+        ensure_embeddings_for_article(
+            $pdo,
+            $articleId,
+            $relPath,
+            $embedModel,
+            static fn () => assert_not_cancelled($pdo, $evaluationId)
+        );
 
         $processed++;
+        $fullyIndexedLinks[$link] = true;
         update_evaluation($pdo, $evaluationId, [
             'processed_files' => $processed,
         ]);
@@ -470,6 +527,7 @@ try {
         'current_section' => null,
         'total_sections' => null,
         'current_detail' => null,
+        'searchable_files' => $searchable,
         'processed_files' => $processed,
     ]);
     append_evaluation_event($projectId, [

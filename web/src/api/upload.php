@@ -5,7 +5,6 @@ declare(strict_types=1);
 ini_set('display_errors', '0');
 
 require_once __DIR__ . '/../lib/db.php';
-require_once __DIR__ . '/../lib/ollama.php';
 require_once __DIR__ . '/../lib/helpers.php';
 require_once __DIR__ . '/../lib/project_types.php';
 
@@ -90,9 +89,6 @@ if ($entries === []) {
 
 try {
     $pdo = db();
-    $embedText = $name . "\n" . $description;
-    $embedding = ollama_embed($embedText);
-    $embedModel = ollama_embed_model();
 
     $pdo->beginTransaction();
 
@@ -108,16 +104,6 @@ try {
         'project_type' => $projectType->key(),
     ]);
     $projectId = (int) $stmt->fetchColumn();
-
-    $embedStmt = $pdo->prepare(
-        'INSERT INTO project_embeddings (project_id, model, embedding)
-         VALUES (:project_id, :model, CAST(:embedding AS vector))'
-    );
-    $embedStmt->execute([
-        'project_id' => $projectId,
-        'model' => $embedModel,
-        'embedding' => embedding_to_sql($embedding),
-    ]);
 
     $projectDir = projects_path() . '/' . $projectId;
     if (!mkdir($projectDir, 0775, true) && !is_dir($projectDir)) {

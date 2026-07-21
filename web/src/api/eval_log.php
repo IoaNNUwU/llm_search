@@ -33,9 +33,13 @@ try {
     }
 
     $total = (int) $row['total_files'];
+    $searchable = (int) $row['searchable_files'];
     $done = (int) $row['processed_files'];
     $percent = $total > 0
         ? (int) round(($done / $total) * 100)
+        : ($row['status'] === 'completed' ? 100 : 0);
+    $searchablePercent = $total > 0
+        ? (int) round(($searchable / $total) * 100)
         : ($row['status'] === 'completed' ? 100 : 0);
 
     $files = collect_markdown_files(
@@ -48,8 +52,10 @@ try {
         'project_name' => $proj['name'],
         'status' => $row['status'],
         'total_files' => $total,
+        'searchable_files' => $searchable,
         'processed_files' => $done,
         'percent' => $percent,
+        'searchable_percent' => $searchablePercent,
         'current_file' => $row['current_file'],
         'current_phase' => $row['current_phase'],
         'current_section' => $row['current_section'] !== null ? (int) $row['current_section'] : null,

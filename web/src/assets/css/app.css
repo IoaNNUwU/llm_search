@@ -272,14 +272,24 @@ body:not(.sidebar-collapsed) #btn-open-sidebar {
     background: var(--border);
     border-radius: 2px;
     overflow: hidden;
+    position: relative;
 }
 
 .eval-bar > span {
     display: block;
+    position: absolute;
+    inset: 0 auto 0 0;
     height: 100%;
-    background: var(--accent);
     width: 0%;
     transition: width 0.3s ease;
+}
+
+.eval-bar-searchable {
+    background: #1f5f49;
+}
+
+.eval-bar-indexed {
+    background: #51c997;
 }
 
 .eval-detail {
@@ -1203,10 +1213,13 @@ button:disabled {
     border-radius: 999px;
     background: color-mix(in srgb, var(--border) 80%, var(--bg));
     overflow: hidden;
+    position: relative;
 }
 
 .log-progress-bar > span {
     display: block;
+    position: absolute;
+    inset: 0 auto 0 0;
     height: 100%;
     width: 0;
     border-radius: inherit;
@@ -1216,6 +1229,14 @@ button:disabled {
         var(--accent)
     );
     transition: width 0.35s ease;
+}
+
+.log-progress-bar > .log-progress-searchable {
+    background: #1f5f49;
+}
+
+.log-progress-bar > .log-progress-indexed {
+    background: #51c997;
 }
 
 .log-progress-label {

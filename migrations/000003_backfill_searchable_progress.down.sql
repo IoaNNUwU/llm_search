@@ -1,0 +1,1 @@
+-- Progress backfill is intentionally retained on rollback.
