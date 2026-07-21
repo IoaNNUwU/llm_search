@@ -73,39 +73,74 @@ function ollama_chat(string $prompt, string $system = ''): string
     return $content;
 }
 
+function ollama_embed_batch_size(): int
+{
+    $size = (int) env('OLLAMA_EMBED_BATCH_SIZE', '32');
+    return max(1, $size);
+}
+
+/**
+ * @param list<string> $texts
+ * @return list<list<float|int>>
+ */
+function ollama_embed_batch(array $texts): array
+{
+    if ($texts === []) {
+        return [];
+    }
+
+    $normalized = [];
+    foreach ($texts as $text) {
+        $text = trim((string) $text);
+        $normalized[] = $text === '' ? ' ' : $text;
+    }
+
+    $out = [];
+    $batchSize = ollama_embed_batch_size();
+    $chunks = array_chunk($normalized, $batchSize);
+
+    foreach ($chunks as $chunk) {
+        try {
+            $data = ollama_request('/api/embed', [
+                'model' => ollama_embed_model(),
+                'input' => $chunk,
+            ], 300);
+            $embeddings = $data['embeddings'] ?? null;
+            if (!is_array($embeddings) || count($embeddings) !== count($chunk)) {
+                throw new RuntimeException('Ollama embed batch size mismatch');
+            }
+            foreach ($embeddings as $embedding) {
+                if (!is_array($embedding)) {
+                    throw new RuntimeException('Ollama embed batch returned invalid vector');
+                }
+                $out[] = $embedding;
+            }
+            continue;
+        } catch (Throwable) {
+            // fall through to single-request path
+        }
+
+        foreach ($chunk as $text) {
+            $data = ollama_request('/api/embeddings', [
+                'model' => ollama_embed_model(),
+                'prompt' => $text,
+            ], 120);
+            if (!isset($data['embedding']) || !is_array($data['embedding'])) {
+                throw new RuntimeException('Ollama embed returned no vector');
+            }
+            $out[] = $data['embedding'];
+        }
+    }
+
+    return $out;
+}
+
 /**
  * @return list<float|int>
  */
 function ollama_embed(string $text): array
 {
-    $text = trim($text);
-    if ($text === '') {
-        $text = ' ';
-    }
-
-    // Prefer /api/embed (newer); fall back to /api/embeddings.
-    try {
-        $data = ollama_request('/api/embed', [
-            'model' => ollama_embed_model(),
-            'input' => $text,
-        ], 120);
-        if (isset($data['embeddings'][0]) && is_array($data['embeddings'][0])) {
-            return $data['embeddings'][0];
-        }
-    } catch (Throwable) {
-        // fall through
-    }
-
-    $data = ollama_request('/api/embeddings', [
-        'model' => ollama_embed_model(),
-        'prompt' => $text,
-    ], 120);
-
-    if (!isset($data['embedding']) || !is_array($data['embedding'])) {
-        throw new RuntimeException('Ollama embed returned no vector');
-    }
-
-    return $data['embedding'];
+    return ollama_embed_batch([$text])[0];
 }
 
 /**

@@ -124,69 +124,89 @@ function ensure_embeddings_for_article(
         return;
     }
 
+    $sections = $pdo->prepare(
+        'SELECT id, title, description, content FROM articles_sections WHERE article_id = :id ORDER BY id'
+    );
+    $sections->execute(['id' => $articleId]);
+    $sectionRows = $sections->fetchAll();
+
+    $pending = [];
     $hasArticleEmbed = $pdo->prepare(
         'SELECT 1 FROM article_embeddings WHERE article_id = :id AND model = :model'
     );
     $hasArticleEmbed->execute(['id' => $articleId, 'model' => $model]);
     if (!$hasArticleEmbed->fetchColumn()) {
         $content = '';
-        $sectionsStmt = $pdo->prepare(
-            'SELECT content FROM articles_sections WHERE article_id = :id ORDER BY id'
-        );
-        $sectionsStmt->execute(['id' => $articleId]);
-        foreach ($sectionsStmt->fetchAll(PDO::FETCH_COLUMN) as $part) {
-            $content .= (string) $part . "\n\n";
+        foreach ($sectionRows as $part) {
+            $content .= (string) $part['content'] . "\n\n";
         }
-        $embedding = ollama_embed(article_embed_text(
-            $relPath,
-            (string) $article['title'],
-            (string) $article['description'],
-            $content
-        ));
-        $insert = $pdo->prepare(
-            'INSERT INTO article_embeddings (article_id, model, embedding)
-             VALUES (:article_id, :model, CAST(:embedding AS vector))
-             ON CONFLICT (article_id, model) DO NOTHING'
-        );
-        $insert->execute([
-            'article_id' => $articleId,
-            'model' => $model,
-            'embedding' => embedding_to_sql($embedding),
-        ]);
+        $pending[] = [
+            'kind' => 'article',
+            'id' => $articleId,
+            'text' => article_embed_text(
+                $relPath,
+                (string) $article['title'],
+                (string) $article['description'],
+                $content
+            ),
+        ];
     }
 
-    $sections = $pdo->prepare(
-        'SELECT id, title, description, content FROM articles_sections WHERE article_id = :id ORDER BY id'
-    );
-    $sections->execute(['id' => $articleId]);
     $hasSectionEmbed = $pdo->prepare(
         'SELECT 1 FROM article_section_embeddings WHERE section_id = :id AND model = :model'
     );
-    $insertSectionEmbed = $pdo->prepare(
-        'INSERT INTO article_section_embeddings (section_id, model, embedding)
-         VALUES (:section_id, :model, CAST(:embedding AS vector))
-         ON CONFLICT (section_id, model) DO NOTHING'
-    );
-
-    foreach ($sections->fetchAll() as $section) {
-        $assertNotCancelled();
+    foreach ($sectionRows as $section) {
         $sectionId = (int) $section['id'];
         $hasSectionEmbed->execute(['id' => $sectionId, 'model' => $model]);
         if ($hasSectionEmbed->fetchColumn()) {
             continue;
         }
         $heading = trim((string) ($section['title'] ?? ''));
-        $embedding = ollama_embed(section_embed_text(
-            $relPath,
-            $heading !== '' ? $heading : null,
-            (string) ($section['title'] ?? ''),
-            (string) ($section['description'] ?? ''),
-            (string) $section['content']
-        ));
-        $insertSectionEmbed->execute([
-            'section_id' => $sectionId,
+        $pending[] = [
+            'kind' => 'section',
+            'id' => $sectionId,
+            'text' => section_embed_text(
+                $relPath,
+                $heading !== '' ? $heading : null,
+                (string) ($section['title'] ?? ''),
+                (string) ($section['description'] ?? ''),
+                (string) $section['content']
+            ),
+        ];
+    }
+
+    if ($pending === []) {
+        return;
+    }
+
+    $assertNotCancelled();
+    $embeddings = ollama_embed_batch(array_column($pending, 'text'));
+    $insertArticle = $pdo->prepare(
+        'INSERT INTO article_embeddings (article_id, model, embedding)
+         VALUES (:article_id, :model, CAST(:embedding AS vector))
+         ON CONFLICT (article_id, model) DO NOTHING'
+    );
+    $insertSection = $pdo->prepare(
+        'INSERT INTO article_section_embeddings (section_id, model, embedding)
+         VALUES (:section_id, :model, CAST(:embedding AS vector))
+         ON CONFLICT (section_id, model) DO NOTHING'
+    );
+
+    foreach ($pending as $i => $item) {
+        $assertNotCancelled();
+        $vector = embedding_to_sql($embeddings[$i]);
+        if ($item['kind'] === 'article') {
+            $insertArticle->execute([
+                'article_id' => $item['id'],
+                'model' => $model,
+                'embedding' => $vector,
+            ]);
+            continue;
+        }
+        $insertSection->execute([
+            'section_id' => $item['id'],
             'model' => $model,
-            'embedding' => embedding_to_sql($embedding),
+            'embedding' => $vector,
         ]);
     }
 }
@@ -333,12 +353,46 @@ try {
 
         $meta = llm_title_description($content, "markdown file {$relPath}");
         assert_not_cancelled($pdo, $evaluationId);
-        $embedding = ollama_embed(article_embed_text(
-            $relPath,
-            $meta['title'],
-            $meta['description'],
-            $content
-        ));
+
+        $sections = split_markdown_sections($content);
+        $sectionTotal = count($sections);
+        $sectionMetas = [];
+        $embedTexts = [
+            article_embed_text($relPath, $meta['title'], $meta['description'], $content),
+        ];
+        foreach ($sections as $section) {
+            $sectionMeta = heuristic_title_description($section['content'], $section['heading']);
+            $sectionMetas[] = $sectionMeta;
+            $embedTexts[] = section_embed_text(
+                $relPath,
+                $section['heading'],
+                $sectionMeta['title'],
+                $sectionMeta['description'],
+                $section['content']
+            );
+        }
+
+        update_evaluation($pdo, $evaluationId, [
+            'current_file' => $relPath,
+            'current_phase' => 'embed',
+            'current_section' => null,
+            'total_sections' => $sectionTotal,
+            'current_detail' => "Embedding {$sectionTotal} section(s) in batch",
+        ]);
+        append_evaluation_event($projectId, [
+            'phase' => 'embed',
+            'file' => $relPath,
+            'file_index' => $fileIndex + 1,
+            'file_total' => $fileTotal,
+            'message' => "Batch embedding file + {$sectionTotal} section(s)",
+            'text' => null,
+        ]);
+
+        assert_not_cancelled($pdo, $evaluationId);
+        $embeddings = ollama_embed_batch($embedTexts);
+        $articleEmbedding = $embeddings[0];
+        $sectionEmbeddings = array_slice($embeddings, 1);
+
         $insertArticle->execute([
             'project_id' => $projectId,
             'title' => $meta['title'],
@@ -349,11 +403,9 @@ try {
         $insertArticleEmbed->execute([
             'article_id' => $articleId,
             'model' => $embedModel,
-            'embedding' => embedding_to_sql($embedding),
+            'embedding' => embedding_to_sql($articleEmbedding),
         ]);
 
-        $sections = split_markdown_sections($content);
-        $sectionTotal = count($sections);
         $lastAnchor = null;
         foreach ($sections as $sectionIndex => $section) {
             assert_not_cancelled($pdo, $evaluationId);
@@ -364,6 +416,7 @@ try {
             $anchor = $section['anchor'] ?? $lastAnchor;
             $sectionText = detail_preview($section['content']);
             $heading = $section['heading'];
+            $sectionMeta = $sectionMetas[$sectionIndex];
 
             update_evaluation($pdo, $evaluationId, [
                 'current_file' => $relPath,
@@ -381,21 +434,10 @@ try {
                 'section_total' => $sectionTotal,
                 'heading' => $heading,
                 'message' => $heading
-                    ? "Evaluating section «{$heading}»"
-                    : 'Evaluating section',
+                    ? "Saving section «{$heading}»"
+                    : 'Saving section',
                 'text' => $sectionText,
             ]);
-
-            // Sections skip the chat LLM: heading + content excerpt is enough for search metadata.
-            $sectionMeta = heuristic_title_description($section['content'], $heading);
-            assert_not_cancelled($pdo, $evaluationId);
-            $sectionEmbed = ollama_embed(section_embed_text(
-                $relPath,
-                $heading,
-                $sectionMeta['title'],
-                $sectionMeta['description'],
-                $section['content']
-            ));
 
             $insertSection->execute([
                 'article_id' => $articleId,
@@ -408,7 +450,7 @@ try {
             $insertSectionEmbed->execute([
                 'section_id' => $sectionId,
                 'model' => $embedModel,
-                'embedding' => embedding_to_sql($sectionEmbed),
+                'embedding' => embedding_to_sql($sectionEmbeddings[$sectionIndex]),
             ]);
         }
 

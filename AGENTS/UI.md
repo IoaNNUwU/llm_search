@@ -21,4 +21,5 @@ To evaluate uploaded project:
     - sections split from each other by markdown headers # ## ### etc.
     - title = markdown heading; description = first N characters of section text (no LLM call).
     - embedding should be stored in `article_section_embeddings` keyed by model to keep them if model changes.
+    - file + section embeddings are requested in batches via Ollama `/api/embed`.
     - link to each section is a link to the header above it
