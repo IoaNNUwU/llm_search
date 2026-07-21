@@ -6,6 +6,7 @@ import { hydrateChatMarkdown } from './markdown.js';
 
 const LANG_KEY = 'chatLanguage';
 const PROJECT_IDS_KEY = 'selectedProjectIds';
+const AGENT_KEY = 'useAgent';
 
 const messages = document.getElementById('messages');
 function scrollMessagesToBottom() {
@@ -62,6 +63,8 @@ let selectedProjectIds = loadSelectedProjectIds();
 let projectsCache = [];
 
 const projectIdsInput = document.getElementById('project-ids-input');
+const useAgentInput = document.getElementById('use-agent-input');
+const agentToggle = document.getElementById('agent-toggle');
 const contextBar = document.getElementById('context-bar');
 const contextProjectName = document.getElementById('context-project-name');
 const languageSelect = document.getElementById('chat-language');
@@ -73,6 +76,24 @@ function persistSelectedProjectIds(ids) {
 
 function normalizeLanguage(code) {
     return code === 'en' ? 'en' : 'ru';
+}
+
+function isAgentEnabled() {
+    return localStorage.getItem(AGENT_KEY) !== '0';
+}
+
+function setAgentEnabled(enabled) {
+    localStorage.setItem(AGENT_KEY, enabled ? '1' : '0');
+    if (agentToggle) agentToggle.checked = enabled;
+    if (useAgentInput) useAgentInput.value = enabled ? '1' : '0';
+}
+
+function initAgentToggle() {
+    setAgentEnabled(isAgentEnabled());
+    if (!agentToggle) return;
+    agentToggle.addEventListener('change', () => {
+        setAgentEnabled(agentToggle.checked);
+    });
 }
 
 function initLanguageSelect() {
@@ -97,6 +118,7 @@ function initLanguageSelect() {
 function updateChatContext() {
     const selected = projectsCache.filter((p) => selectedProjectIds.includes(p.id));
     projectIdsInput.value = selected.map((p) => p.id).join(',');
+    if (useAgentInput) useAgentInput.value = isAgentEnabled() ? '1' : '0';
     contextBar.dataset.active = selected.length ? '1' : '0';
     if (!selected.length) {
         contextProjectName.textContent = 'no projects selected';
@@ -111,9 +133,10 @@ function updateChatContext() {
 }
 
 initLanguageSelect();
+initAgentToggle();
 
 initSidebar();
-initComposer(updateChatContext);
+initComposer(updateChatContext, isAgentEnabled);
 
 const { openEvalLog } = initEvalLog();
 const { loadProjects, startPolling } = initProjects({

@@ -45,6 +45,11 @@ $windowId = isset($windowId) ? (string) $windowId : chat_window_id();
                 <h1>LLM Search Engine</h1>
             </div>
             <div class="header-right">
+                <label class="agent-toggle" title="When off, answers are only relevant links from selected sources">
+                    <span class="agent-toggle-label">Agent</span>
+                    <input type="checkbox" id="agent-toggle" checked aria-label="Use chat agent">
+                    <span class="agent-toggle-track" aria-hidden="true"><span class="agent-toggle-thumb"></span></span>
+                </label>
                 <button
                     class="secondary btn-new-window"
                     type="submit"

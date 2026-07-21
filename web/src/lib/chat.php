@@ -159,7 +159,9 @@ function chat_handle_post(string $ollamaModel): array
     $prompt = trim((string) ($_POST['prompt'] ?? ''));
     $projectIds = parse_project_ids($_POST['project_ids'] ?? ($_POST['project_id'] ?? ''));
     $language = normalize_chat_language($_POST['language'] ?? null);
+    $useAgent = !in_array(strtolower(trim((string) ($_POST['use_agent'] ?? '1'))), ['0', 'false', 'off', 'no'], true);
     $_SESSION['chat_language'] = $language;
+    $_SESSION['use_agent'] = $useAgent;
     $result['prompt'] = $prompt;
 
     if ($prompt === '') {
@@ -182,13 +184,34 @@ function chat_handle_post(string $ollamaModel): array
             $projectNames = array_map(static fn (array $p): string => $p['name'], $projects);
             $resolvedIds = array_map(static fn (array $p): int => $p['id'], $projects);
             if ($resolvedIds !== []) {
-                // Fetch candidates, then keep only hits close to the best vector match.
                 $hits = filter_hits_by_top_distance(
                     search_project_sections($pdo, $resolvedIds, $prompt, RAG_REFERENCE_LIMIT)
                 );
                 $ragLimit = min(count($hits), RAG_SECTION_LIMIT * max(1, count($resolvedIds)));
                 $ragHits = array_slice($hits, 0, $ragLimit);
             }
+        }
+
+        if (!$useAgent) {
+            $refs = references_from_hits($hits);
+            $assistant = [
+                'role' => 'assistant',
+                'content' => '',
+                'links_only' => true,
+            ];
+            if ($refs !== []) {
+                $assistant['references'] = $refs;
+                if ($projectNames !== []) {
+                    $assistant['project_names'] = $projectNames;
+                }
+            } else {
+                $assistant['content'] = $language === 'en'
+                    ? 'No relevant links found in the selected sources.'
+                    : 'В выбранных источниках релевантных ссылок не найдено.';
+            }
+            $messages[] = $assistant;
+            chat_set_messages(chat_trim_messages($messages));
+            chat_redirect(chat_window_id());
         }
 
         $payload = [

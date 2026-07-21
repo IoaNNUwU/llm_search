@@ -378,10 +378,8 @@ try {
                 'text' => $sectionText,
             ]);
 
-            $sectionMeta = llm_title_description(
-                $section['content'],
-                'section' . ($heading ? " «{$heading}»" : '') . " in {$relPath}"
-            );
+            // Sections skip the chat LLM: heading + content excerpt is enough for search metadata.
+            $sectionMeta = heuristic_title_description($section['content'], $heading);
             assert_not_cancelled($pdo, $evaluationId);
             $sectionEmbed = ollama_embed(section_embed_text(
                 $relPath,

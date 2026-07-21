@@ -10,7 +10,7 @@ declare(strict_types=1);
 ?>
 <div class="messages" id="messages">
     <?php if ($messages === []): ?>
-        <p class="empty">Ask anything. Toggle projects in the sidebar to ground answers in their docs and show reference links.</p>
+        <p class="empty">Ask anything. Select projects in the sidebar for sources. Turn Agent off in the top panel to get only relevant links.</p>
     <?php else: ?>
         <?php foreach ($messages as $message): ?>
             <?php require __DIR__ . '/message.php'; ?>
@@ -25,6 +25,7 @@ declare(strict_types=1);
 <form class="composer" method="post" id="composer">
     <input type="hidden" name="w" id="window-id-input" value="<?= h($windowId) ?>">
     <input type="hidden" name="project_ids" id="project-ids-input" value="">
+    <input type="hidden" name="use_agent" id="use-agent-input" value="1">
     <div class="context-bar" id="context-bar" data-active="0">
         Context: <strong id="context-project-name">no projects selected</strong>
     </div>

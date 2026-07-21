@@ -1,5 +1,6 @@
-
 UI is the chat window with text input at the bottom.
+
+Top panel has an Agent slider. When on, questions go through the RAG chat agent. When off, answers are only a list of relevant links from the selected sources (no LLM reply).
 
 To the left of the chat window I want to see the side-bar with the ability to select projects and button to upload the new one.
 
@@ -18,7 +19,6 @@ To evaluate uploaded project:
 
 2. Evaluate each file section and put it in articles_sections table.
     - sections split from each other by markdown headers # ## ### etc.
-    - title and description field should be generated automatically with local LLM.
-    - embedding should be stored in `article_embeddings` keyed by model to keep them if model changes.
+    - title = markdown heading (or first line if no heading); description = first N characters of section text (no LLM call).
+    - embedding should be stored in `article_section_embeddings` keyed by model to keep them if model changes.
     - link to each section is a link to the header above it
-

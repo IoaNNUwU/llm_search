@@ -109,6 +109,31 @@ function ollama_embed(string $text): array
 }
 
 /**
+ * Title/description from text without calling the LLM.
+ * When $preferredTitle is set (e.g. markdown heading), it is used as the title.
+ *
+ * @return array{title: string, description: string}
+ */
+function heuristic_title_description(string $text, ?string $preferredTitle = null, int $descriptionMax = 240): array
+{
+    $excerpt = mb_substr($text, 0, 6000, 'UTF-8');
+    $title = $preferredTitle !== null ? trim($preferredTitle) : '';
+    if ($title === '') {
+        $firstLine = trim(preg_split('/\R/', $excerpt)[0] ?? 'Untitled');
+        $firstLine = preg_replace('/^#{1,6}\s+/', '', $firstLine) ?? $firstLine;
+        $title = $firstLine !== '' ? $firstLine : 'Untitled';
+    }
+
+    $description = preg_replace('/\s+/', ' ', $excerpt) ?? $excerpt;
+    $description = trim($description);
+
+    return [
+        'title' => mb_substr($title, 0, 80, 'UTF-8'),
+        'description' => mb_substr($description, 0, max(1, $descriptionMax), 'UTF-8'),
+    ];
+}
+
+/**
  * @return array{title: string, description: string}
  */
 function llm_title_description(string $text, string $contextLabel): array
@@ -137,14 +162,5 @@ function llm_title_description(string $text, string $contextLabel): array
         // fall through to heuristic
     }
 
-    $firstLine = trim(preg_split('/\R/', $excerpt)[0] ?? 'Untitled');
-    $firstLine = preg_replace('/^#{1,6}\s+/', '', $firstLine) ?? $firstLine;
-    if ($firstLine === '') {
-        $firstLine = 'Untitled';
-    }
-
-    return [
-        'title' => mb_substr($firstLine, 0, 80, 'UTF-8'),
-        'description' => mb_substr(preg_replace('/\s+/', ' ', $excerpt) ?? $excerpt, 0, 240, 'UTF-8'),
-    ];
+    return heuristic_title_description($text);
 }

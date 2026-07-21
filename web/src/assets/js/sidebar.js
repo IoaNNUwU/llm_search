@@ -15,7 +15,7 @@ export function initSidebar() {
     document.getElementById('btn-open-sidebar').addEventListener('click', () => setSidebarCollapsed(false));
 }
 
-function showThinkingState(prompt) {
+function showThinkingState(prompt, useAgent) {
     const messages = document.getElementById('messages');
     if (!messages) return;
 
@@ -31,10 +31,11 @@ function showThinkingState(prompt) {
     thinking.className = 'bubble assistant thinking';
     thinking.setAttribute('aria-live', 'polite');
     thinking.setAttribute('aria-busy', 'true');
+    const label = useAgent ? 'Thinking' : 'Searching';
     thinking.innerHTML = `
-        <span class="role">assistant</span>
-        <div class="thinking-label">Thinking<span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span></div>
-        <div class="thinking-progress" role="progressbar" aria-label="Waiting for model" aria-valuemin="0" aria-valuemax="100">
+        <span class="role">${useAgent ? 'assistant' : 'links'}</span>
+        <div class="thinking-label">${label}<span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span></div>
+        <div class="thinking-progress" role="progressbar" aria-label="${useAgent ? 'Waiting for model' : 'Searching sources'}" aria-valuemin="0" aria-valuemax="100">
             <div class="thinking-progress-bar"></div>
         </div>
     `;
@@ -45,7 +46,7 @@ function showThinkingState(prompt) {
     });
 }
 
-export function initComposer(updateChatContext) {
+export function initComposer(updateChatContext, isAgentEnabled = () => true) {
     document.getElementById('composer').addEventListener('submit', (event) => {
         const submitter = event.submitter;
         if (submitter && (submitter.name === 'clear' || submitter.name === 'new_window')) {
@@ -59,11 +60,12 @@ export function initComposer(updateChatContext) {
         }
 
         updateChatContext();
-        showThinkingState(prompt);
+        const useAgent = typeof isAgentEnabled === 'function' ? isAgentEnabled() : true;
+        showThinkingState(prompt, useAgent);
 
         const send = document.getElementById('send');
         send.disabled = true;
-        send.textContent = 'Thinking…';
+        send.textContent = useAgent ? 'Thinking…' : 'Searching…';
         if (textarea) textarea.readOnly = true;
     });
 
