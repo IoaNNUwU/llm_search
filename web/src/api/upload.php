@@ -90,21 +90,31 @@ try {
     $pdo = db();
     $embedText = $name . "\n" . $description;
     $embedding = ollama_embed($embedText);
+    $embedModel = ollama_embed_model();
 
     $pdo->beginTransaction();
 
     $stmt = $pdo->prepare(
-        'INSERT INTO projects (base_url, name, description, embedding)
-         VALUES (:base_url, :name, :description, CAST(:embedding AS vector))
+        'INSERT INTO projects (base_url, name, description)
+         VALUES (:base_url, :name, :description)
          RETURNING id'
     );
     $stmt->execute([
         'base_url' => $baseUrl,
         'name' => $name,
         'description' => $description,
-        'embedding' => embedding_to_sql($embedding),
     ]);
     $projectId = (int) $stmt->fetchColumn();
+
+    $embedStmt = $pdo->prepare(
+        'INSERT INTO project_embeddings (project_id, model, embedding)
+         VALUES (:project_id, :model, CAST(:embedding AS vector))'
+    );
+    $embedStmt->execute([
+        'project_id' => $projectId,
+        'model' => $embedModel,
+        'embedding' => embedding_to_sql($embedding),
+    ]);
 
     $projectDir = projects_path() . '/' . $projectId;
     if (!mkdir($projectDir, 0775, true) && !is_dir($projectDir)) {

@@ -146,6 +146,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
     }
 
     $embeddingSql = embedding_to_sql(ollama_embed($query));
+    $embedModel = ollama_embed_model();
     $limit = max(1, min(20, $limit));
     $candidateLimit = max($limit, min(60, $limit * RAG_VECTOR_CANDIDATE_MULT));
 
@@ -164,18 +165,19 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
             a.link AS article_link,
             a.project_id,
             p.name AS project_name,
-            (s.embedding <=> q.v) AS distance
+            (e.embedding <=> q.v) AS distance
         FROM articles_sections s
+        INNER JOIN article_section_embeddings e ON e.section_id = s.id AND e.model = ?
         INNER JOIN articles a ON a.id = s.article_id
         INNER JOIN projects p ON p.id = a.project_id
         CROSS JOIN q
         WHERE a.project_id IN ({$placeholders})
-        ORDER BY s.embedding <=> q.v
+        ORDER BY e.embedding <=> q.v
         LIMIT ?
     SQL;
 
     $stmt = $pdo->prepare($sql);
-    $bind = array_merge([$embeddingSql], $ids, [$candidateLimit]);
+    $bind = array_merge([$embeddingSql, $embedModel], $ids, [$candidateLimit]);
     foreach ($bind as $i => $value) {
         $param = $i + 1;
         if ($i === count($bind) - 1) {

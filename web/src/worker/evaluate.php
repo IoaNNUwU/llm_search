@@ -82,6 +82,123 @@ function detail_preview(string $text, int $max = 4000): string
     return mb_substr($text, 0, $max, 'UTF-8') . "\n…";
 }
 
+function article_embed_text(string $relPath, string $title, string $description, string $content): string
+{
+    return implode("\n", [
+        basename(str_replace('\\', '/', $relPath)),
+        $title,
+        $description,
+        mb_substr($content, 0, 4000, 'UTF-8'),
+    ]);
+}
+
+function section_embed_text(
+    string $relPath,
+    ?string $heading,
+    string $title,
+    string $description,
+    string $content
+): string {
+    return implode("\n", array_filter([
+        $heading !== null && $heading !== '' ? $heading : null,
+        basename(str_replace('\\', '/', $relPath)),
+        $title,
+        $description,
+        $content,
+    ], static fn ($part): bool => $part !== null && $part !== ''));
+}
+
+function ensure_embeddings_for_article(
+    PDO $pdo,
+    int $articleId,
+    string $relPath,
+    string $model,
+    callable $assertNotCancelled
+): void {
+    $assertNotCancelled();
+
+    $articleStmt = $pdo->prepare('SELECT title, description, link FROM articles WHERE id = :id');
+    $articleStmt->execute(['id' => $articleId]);
+    $article = $articleStmt->fetch();
+    if (!$article) {
+        return;
+    }
+
+    $hasArticleEmbed = $pdo->prepare(
+        'SELECT 1 FROM article_embeddings WHERE article_id = :id AND model = :model'
+    );
+    $hasArticleEmbed->execute(['id' => $articleId, 'model' => $model]);
+    if (!$hasArticleEmbed->fetchColumn()) {
+        $content = '';
+        $sectionsStmt = $pdo->prepare(
+            'SELECT content FROM articles_sections WHERE article_id = :id ORDER BY id'
+        );
+        $sectionsStmt->execute(['id' => $articleId]);
+        foreach ($sectionsStmt->fetchAll(PDO::FETCH_COLUMN) as $part) {
+            $content .= (string) $part . "\n\n";
+        }
+        $embedding = ollama_embed(article_embed_text(
+            $relPath,
+            (string) $article['title'],
+            (string) $article['description'],
+            $content
+        ));
+        $insert = $pdo->prepare(
+            'INSERT INTO article_embeddings (article_id, model, embedding)
+             VALUES (:article_id, :model, CAST(:embedding AS vector))
+             ON CONFLICT (article_id, model) DO NOTHING'
+        );
+        $insert->execute([
+            'article_id' => $articleId,
+            'model' => $model,
+            'embedding' => embedding_to_sql($embedding),
+        ]);
+    }
+
+    $sections = $pdo->prepare(
+        'SELECT id, title, description, content FROM articles_sections WHERE article_id = :id ORDER BY id'
+    );
+    $sections->execute(['id' => $articleId]);
+    $hasSectionEmbed = $pdo->prepare(
+        'SELECT 1 FROM article_section_embeddings WHERE section_id = :id AND model = :model'
+    );
+    $insertSectionEmbed = $pdo->prepare(
+        'INSERT INTO article_section_embeddings (section_id, model, embedding)
+         VALUES (:section_id, :model, CAST(:embedding AS vector))
+         ON CONFLICT (section_id, model) DO NOTHING'
+    );
+
+    foreach ($sections->fetchAll() as $section) {
+        $assertNotCancelled();
+        $sectionId = (int) $section['id'];
+        $hasSectionEmbed->execute(['id' => $sectionId, 'model' => $model]);
+        if ($hasSectionEmbed->fetchColumn()) {
+            continue;
+        }
+        $heading = trim((string) ($section['title'] ?? ''));
+        $embedding = ollama_embed(section_embed_text(
+            $relPath,
+            $heading !== '' ? $heading : null,
+            (string) ($section['title'] ?? ''),
+            (string) ($section['description'] ?? ''),
+            (string) $section['content']
+        ));
+        $insertSectionEmbed->execute([
+            'section_id' => $sectionId,
+            'model' => $model,
+            'embedding' => embedding_to_sql($embedding),
+        ]);
+    }
+}
+
+function find_article_id_by_link(PDO $pdo, int $projectId, string $link): ?int
+{
+    $stmt = $pdo->prepare('SELECT id FROM articles WHERE project_id = :project_id AND link = :link');
+    $stmt->execute(['project_id' => $projectId, 'link' => $link]);
+    $id = $stmt->fetchColumn();
+    return $id === false ? null : (int) $id;
+}
+
 try {
     if (($evaluation['status'] ?? '') === 'cancelled') {
         throw new EvaluationCancelledException('Evaluation cancelled');
@@ -99,6 +216,7 @@ try {
     $files = collect_markdown_files($storageDir);
     $baseUrl = (string) $row['base_url'];
     $fileTotal = count($files);
+    $embedModel = ollama_embed_model();
 
     if ($resume) {
         $currentFile = trim((string) ($evaluation['current_file'] ?? ''));
@@ -136,21 +254,46 @@ try {
     ]);
 
     $insertArticle = $pdo->prepare(
-        'INSERT INTO articles (project_id, title, description, link, embedding)
-         VALUES (:project_id, :title, :description, :link, CAST(:embedding AS vector))
+        'INSERT INTO articles (project_id, title, description, link)
+         VALUES (:project_id, :title, :description, :link)
          RETURNING id'
     );
     $insertSection = $pdo->prepare(
-        'INSERT INTO articles_sections (article_id, title, description, content, link, embedding)
-         VALUES (:article_id, :title, :description, :content, :link, CAST(:embedding AS vector))'
+        'INSERT INTO articles_sections (article_id, title, description, content, link)
+         VALUES (:article_id, :title, :description, :content, :link)
+         RETURNING id'
+    );
+    $insertArticleEmbed = $pdo->prepare(
+        'INSERT INTO article_embeddings (article_id, model, embedding)
+         VALUES (:article_id, :model, CAST(:embedding AS vector))
+         ON CONFLICT (article_id, model) DO NOTHING'
+    );
+    $insertSectionEmbed = $pdo->prepare(
+        'INSERT INTO article_section_embeddings (section_id, model, embedding)
+         VALUES (:section_id, :model, CAST(:embedding AS vector))
+         ON CONFLICT (section_id, model) DO NOTHING'
     );
 
     foreach ($files as $fileIndex => $relPath) {
         assert_not_cancelled($pdo, $evaluationId);
 
         $link = project_file_link($baseUrl, $relPath);
-        if (is_file_indexed($indexedLinks, $baseUrl, $relPath)) {
-            $processed++;
+        $existingArticleId = find_article_id_by_link($pdo, $projectId, $link);
+        if ($existingArticleId !== null) {
+            update_evaluation($pdo, $evaluationId, [
+                'current_file' => $relPath,
+                'current_phase' => 'embed',
+                'current_section' => null,
+                'total_sections' => null,
+                'current_detail' => "Ensuring embeddings for model {$embedModel}",
+            ]);
+            ensure_embeddings_for_article(
+                $pdo,
+                $existingArticleId,
+                $relPath,
+                $embedModel,
+                static fn () => assert_not_cancelled($pdo, $evaluationId)
+            );
             update_evaluation($pdo, $evaluationId, [
                 'processed_files' => $processed,
             ]);
@@ -182,20 +325,24 @@ try {
 
         $meta = llm_title_description($content, "markdown file {$relPath}");
         assert_not_cancelled($pdo, $evaluationId);
-        $embedding = ollama_embed(implode("\n", [
-            basename(str_replace('\\', '/', $relPath)),
+        $embedding = ollama_embed(article_embed_text(
+            $relPath,
             $meta['title'],
             $meta['description'],
-            mb_substr($content, 0, 4000, 'UTF-8'),
-        ]));
+            $content
+        ));
         $insertArticle->execute([
             'project_id' => $projectId,
             'title' => $meta['title'],
             'description' => $meta['description'],
             'link' => $link,
-            'embedding' => embedding_to_sql($embedding),
         ]);
         $articleId = (int) $insertArticle->fetchColumn();
+        $insertArticleEmbed->execute([
+            'article_id' => $articleId,
+            'model' => $embedModel,
+            'embedding' => embedding_to_sql($embedding),
+        ]);
 
         $sections = split_markdown_sections($content);
         $sectionTotal = count($sections);
@@ -236,13 +383,13 @@ try {
                 'section' . ($heading ? " «{$heading}»" : '') . " in {$relPath}"
             );
             assert_not_cancelled($pdo, $evaluationId);
-            $sectionEmbed = ollama_embed(implode("\n", array_filter([
-                $heading !== null && $heading !== '' ? $heading : null,
-                basename(str_replace('\\', '/', $relPath)),
+            $sectionEmbed = ollama_embed(section_embed_text(
+                $relPath,
+                $heading,
                 $sectionMeta['title'],
                 $sectionMeta['description'],
-                $section['content'],
-            ], static fn ($part): bool => $part !== null && $part !== '')));
+                $section['content']
+            ));
 
             $insertSection->execute([
                 'article_id' => $articleId,
@@ -250,6 +397,11 @@ try {
                 'description' => $sectionMeta['description'],
                 'content' => $section['content'],
                 'link' => section_link($link, $anchor),
+            ]);
+            $sectionId = (int) $insertSection->fetchColumn();
+            $insertSectionEmbed->execute([
+                'section_id' => $sectionId,
+                'model' => $embedModel,
                 'embedding' => embedding_to_sql($sectionEmbed),
             ]);
         }

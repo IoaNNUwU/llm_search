@@ -5,9 +5,7 @@ CREATE TABLE projects (
 
     base_url          TEXT               NOT NULL,
     name              TEXT               NOT NULL,
-    description       TEXT               NOT NULL,
-
-    embedding         VECTOR(1536)       NOT NULL
+    description       TEXT               NOT NULL
 );
 
 CREATE TABLE articles (
@@ -17,9 +15,7 @@ CREATE TABLE articles (
     title             TEXT               NOT NULL,
     description       TEXT               NOT NULL,
 
-    link              TEXT               NOT NULL,
-
-    embedding         VECTOR(1536)       NOT NULL
+    link              TEXT               NOT NULL
 );
 
 CREATE TABLE articles_sections (
@@ -30,9 +26,31 @@ CREATE TABLE articles_sections (
     description       TEXT               DEFAULT NULL,
     content           TEXT               NOT NULL,
 
-    link              TEXT               NOT NULL,
+    link              TEXT               NOT NULL
+);
 
-    embedding         VECTOR(1536)       NOT NULL
+CREATE TABLE project_embeddings (
+    id                SERIAL             PRIMARY KEY,
+    project_id        INTEGER            NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    model             TEXT               NOT NULL,
+    embedding         VECTOR(1536)       NOT NULL,
+    UNIQUE (project_id, model)
+);
+
+CREATE TABLE article_embeddings (
+    id                SERIAL             PRIMARY KEY,
+    article_id        INTEGER            NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    model             TEXT               NOT NULL,
+    embedding         VECTOR(1536)       NOT NULL,
+    UNIQUE (article_id, model)
+);
+
+CREATE TABLE article_section_embeddings (
+    id                SERIAL             PRIMARY KEY,
+    section_id        INTEGER            NOT NULL REFERENCES articles_sections(id) ON DELETE CASCADE,
+    model             TEXT               NOT NULL,
+    embedding         VECTOR(1536)       NOT NULL,
+    UNIQUE (section_id, model)
 );
 
 CREATE TABLE project_evaluations (
@@ -53,7 +71,7 @@ CREATE TABLE project_evaluations (
     updated_at        TIMESTAMPTZ        NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX ON projects USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX ON articles USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX ON articles_sections USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON project_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON article_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON article_section_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON project_evaluations (project_id);

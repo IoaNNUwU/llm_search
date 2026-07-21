@@ -202,15 +202,8 @@ function fetch_indexed_article_links(PDO $pdo, int $projectId): array
 
 function delete_article_by_link(PDO $pdo, int $projectId, string $link): void
 {
-    $stmt = $pdo->prepare('SELECT id FROM articles WHERE project_id = :project_id AND link = :link');
+    $stmt = $pdo->prepare('DELETE FROM articles WHERE project_id = :project_id AND link = :link');
     $stmt->execute(['project_id' => $projectId, 'link' => $link]);
-    $id = $stmt->fetchColumn();
-    if ($id === false) {
-        return;
-    }
-    $articleId = (int) $id;
-    $pdo->prepare('DELETE FROM articles_sections WHERE article_id = :id')->execute(['id' => $articleId]);
-    $pdo->prepare('DELETE FROM articles WHERE id = :id')->execute(['id' => $articleId]);
 }
 
 function evaluation_is_resumable(array $evaluation, int $articleCount): bool
@@ -225,24 +218,63 @@ function evaluation_is_resumable(array $evaluation, int $articleCount): bool
     return false;
 }
 
+/**
+ * True when the project has sections that lack a vector for the current embed model.
+ */
+function project_missing_embeddings_for_model(PDO $pdo, int $projectId, string $model): bool
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1
+         FROM articles_sections s
+         INNER JOIN articles a ON a.id = s.article_id
+         LEFT JOIN article_section_embeddings e
+           ON e.section_id = s.id AND e.model = :model
+         WHERE a.project_id = :project_id AND e.id IS NULL
+         LIMIT 1'
+    );
+    $stmt->execute(['project_id' => $projectId, 'model' => $model]);
+    return (bool) $stmt->fetchColumn();
+}
+
 function resume_interrupted_evaluations(PDO $pdo): int
 {
+    require_once __DIR__ . '/ollama.php';
+    $embedModel = ollama_embed_model();
+
     $sql = <<<'SQL'
-        SELECT pe.project_id
+        SELECT pe.project_id, pe.status
         FROM project_evaluations pe
         INNER JOIN (
             SELECT project_id, MAX(id) AS id
             FROM project_evaluations
             GROUP BY project_id
         ) latest ON pe.id = latest.id
-        WHERE pe.status IN ('pending', 'processing', 'failed')
+        WHERE pe.status IN ('pending', 'processing', 'failed', 'completed')
         SQL;
-    $projectIds = $pdo->query($sql)->fetchAll(PDO::FETCH_COLUMN);
+    $rows = $pdo->query($sql)->fetchAll();
     $spawned = 0;
-    foreach ($projectIds as $projectId) {
-        $projectId = (int) $projectId;
+    foreach ($rows as $row) {
+        $projectId = (int) $row['project_id'];
+        $status = (string) $row['status'];
+        if ($status === 'completed' && !project_missing_embeddings_for_model($pdo, $projectId, $embedModel)) {
+            continue;
+        }
         if (is_evaluator_running($projectId)) {
             continue;
+        }
+        if ($status === 'completed') {
+            $latestIdStmt = $pdo->prepare(
+                'SELECT id FROM project_evaluations WHERE project_id = :project_id ORDER BY id DESC LIMIT 1'
+            );
+            $latestIdStmt->execute(['project_id' => $projectId]);
+            $latestId = (int) $latestIdStmt->fetchColumn();
+            if ($latestId > 0) {
+                $pdo->prepare(
+                    "UPDATE project_evaluations
+                     SET status = 'pending', error = NULL, updated_at = NOW()
+                     WHERE id = :id"
+                )->execute(['id' => $latestId]);
+            }
         }
         spawn_evaluator($projectId);
         $spawned++;
