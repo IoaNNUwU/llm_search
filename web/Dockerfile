@@ -7,7 +7,7 @@ RUN apt-get update \
     && docker-php-ext-install pdo pdo_pgsql \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/php-uploads.ini /usr/local/etc/php/conf.d/uploads.ini
+COPY php-uploads.ini /usr/local/etc/php/conf.d/uploads.ini
 
 RUN mkdir -p /var/www/projects \
     && chown -R www-data:www-data /var/www/html /var/www/projects

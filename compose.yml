@@ -4,13 +4,13 @@ networks:
 services:
 
   web:
-    build: .
+    build: ./web
     networks:
       - io_llm_search_engine
     ports:
       - "8080:80"
     volumes:
-      - ./src:/var/www/html
+      - ./web/src:/var/www/html
       - ./data/projects:/var/www/projects
     environment:
       OLLAMA_HOST: http://ollama:11434
