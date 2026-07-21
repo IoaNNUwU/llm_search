@@ -52,9 +52,9 @@ function isCurrentEvent(ev, data) {
     return false;
 }
 
-function getSectionDurationSec(events, index, data) {
+function getIndexedDurationSec(events, index, data) {
     const ev = events[index];
-    if (!ev || ev.phase !== 'section' || !ev.ts) {
+    if (!ev || (ev.phase !== 'section' && ev.phase !== 'file') || !ev.ts) {
         return null;
     }
     if (data && isCurrentEvent(ev, data)) {
@@ -86,24 +86,27 @@ function makeBadge(text, className = '') {
     return el;
 }
 
-const RECENT_SECTIONS_LIMIT = 2;
+const RECENT_INDEXED_LIMIT = 2;
 
-function getRecentCompletedSections(events, data, limit = RECENT_SECTIONS_LIMIT) {
+function getRecentCompletedIndexed(events, data, limit = RECENT_INDEXED_LIMIT) {
     const completed = [];
 
     for (let i = 0; i < events.length; i += 1) {
-        const durationSec = getSectionDurationSec(events, i, data);
+        const durationSec = getIndexedDurationSec(events, i, data);
         if (durationSec == null) {
             continue;
         }
 
         const ev = events[i];
         completed.push({
+            kind: ev.phase,
             heading: ev.heading || null,
             message: ev.message || '',
             file: ev.file || '',
             section_index: ev.section_index,
             section_total: ev.section_total,
+            file_index: ev.file_index,
+            file_total: ev.file_total,
             durationSec,
         });
     }
@@ -122,6 +125,20 @@ function sectionSummary(entry) {
         return `${sectionNo} — ${entry.message}`;
     }
     return sectionNo;
+}
+
+function fileSummary(entry) {
+    const fileNo = entry.file_index && entry.file_total
+        ? `Файл ${entry.file_index}/${entry.file_total}`
+        : 'Файл';
+    if (entry.message) {
+        return `${fileNo} — ${entry.message}`;
+    }
+    return fileNo;
+}
+
+function indexedSummary(entry) {
+    return entry.kind === 'file' ? fileSummary(entry) : sectionSummary(entry);
 }
 
 function findCurrentFileMeta(events, data) {
@@ -400,12 +417,25 @@ export function initEvalLog() {
     function renderRecentSections(data, events) {
         if (!logRecentSections || !logRecentList) return;
 
-        const recent = getRecentCompletedSections(events, data);
+        const recent = getRecentCompletedIndexed(events, data);
+        const titleEl = logRecentSections.querySelector('.log-recent-title');
 
         if (!recent.length) {
             logRecentSections.hidden = true;
             logRecentList.replaceChildren();
             return;
+        }
+
+        if (titleEl) {
+            const hasFiles = recent.some((entry) => entry.kind === 'file');
+            const hasSections = recent.some((entry) => entry.kind === 'section');
+            if (hasFiles && hasSections) {
+                titleEl.textContent = 'Последние проиндексированные';
+            } else if (hasFiles) {
+                titleEl.textContent = 'Последние проиндексированные файлы';
+            } else {
+                titleEl.textContent = 'Последние проиндексированные секции';
+            }
         }
 
         logRecentSections.hidden = false;
@@ -417,7 +447,7 @@ export function initEvalLog() {
 
             const main = document.createElement('div');
             main.className = 'log-recent-main';
-            main.textContent = sectionSummary(entry);
+            main.textContent = indexedSummary(entry);
 
             const meta = document.createElement('div');
             meta.className = 'log-recent-meta';

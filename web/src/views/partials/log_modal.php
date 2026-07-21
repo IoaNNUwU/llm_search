@@ -32,7 +32,7 @@
                     <pre id="log-current-text"></pre>
                 </div>
                 <div class="log-recent-sections" id="log-recent-sections" hidden>
-                    <div class="log-recent-title">Последние проиндексированные секции</div>
+                    <div class="log-recent-title">Последние проиндексированные</div>
                     <ul class="log-recent-list" id="log-recent-list"></ul>
                 </div>
             </div>

@@ -19,6 +19,6 @@ To evaluate uploaded project:
 
 2. Evaluate each file section and put it in articles_sections table.
     - sections split from each other by markdown headers # ## ### etc.
-    - title = markdown heading (or first line if no heading); description = first N characters of section text (no LLM call).
+    - title = markdown heading; description = first N characters of section text (no LLM call).
     - embedding should be stored in `article_section_embeddings` keyed by model to keep them if model changes.
     - link to each section is a link to the header above it
