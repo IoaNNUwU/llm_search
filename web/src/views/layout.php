@@ -25,14 +25,14 @@ $windowId = isset($windowId) ? (string) $windowId : chat_window_id();
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="<?= h(asset_url('css/app.css')) ?>">
     <?php
-    $jsScope = [];
+    $jsImports = [];
     foreach (glob(__DIR__ . '/../assets/js/*.js') as $jsFile) {
         $name = basename($jsFile);
-        $jsScope['./' . $name] = asset_url('js/' . $name);
+        $jsImports['/assets/js/' . $name] = asset_url('js/' . $name);
     }
     ?>
     <script type="importmap">
-    <?= json_encode(['scopes' => ['/assets/js/' => $jsScope]], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?>
+    <?= json_encode(['imports' => $jsImports], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) ?>
     </script>
 </head>
 <body>

@@ -1,4 +1,4 @@
-import { isMarkdownPath, parseJsonResponse } from './utils.js';
+import { isMarkdownPath, parseJsonResponse } from '/assets/js/utils.js';
 
 export function initUpload({ addSelectedProjectId, loadProjects, startPolling }) {
     const modal = document.getElementById('upload-modal');

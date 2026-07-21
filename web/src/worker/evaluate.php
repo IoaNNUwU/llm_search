@@ -287,6 +287,14 @@ try {
                 'total_sections' => null,
                 'current_detail' => "Ensuring embeddings for model {$embedModel}",
             ]);
+            append_evaluation_event($projectId, [
+                'phase' => 'file',
+                'file' => $relPath,
+                'file_index' => $fileIndex + 1,
+                'file_total' => $fileTotal,
+                'message' => 'Already indexed — ensuring embeddings',
+                'text' => null,
+            ]);
             ensure_embeddings_for_article(
                 $pdo,
                 $existingArticleId,

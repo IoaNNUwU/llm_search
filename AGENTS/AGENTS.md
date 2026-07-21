@@ -9,7 +9,7 @@ Files in `AGENTS` folder are the specification.
 There is no need for stability. You may change every file if needed, including:
 
 - `migrations` folder. Do not create new migrations, modify the existing ones.
-- do not care about preserving database layout. You may change existing tables and break them.
+- DO NOT care about preserving database layout. You may change existing tables and break them.
 - files in `AGENTS` folder on changes that contradict it or to mark steps as completed.
 
 # Style Guide

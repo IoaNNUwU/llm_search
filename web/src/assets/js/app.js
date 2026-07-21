@@ -1,8 +1,8 @@
-import { initSidebar, initComposer } from './sidebar.js';
-import { initEvalLog } from './eval-log.js';
-import { initProjects } from './projects.js';
-import { initUpload } from './upload.js';
-import { hydrateChatMarkdown } from './markdown.js';
+import { initSidebar, initComposer } from '/assets/js/sidebar.js';
+import { initEvalLog } from '/assets/js/eval-log.js';
+import { initProjects } from '/assets/js/projects.js';
+import { initUpload } from '/assets/js/upload.js';
+import { hydrateChatMarkdown } from '/assets/js/markdown.js';
 
 const LANG_KEY = 'chatLanguage';
 const PROJECT_IDS_KEY = 'selectedProjectIds';

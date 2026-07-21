@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/helpers.php';
+require_once __DIR__ . '/../lib/markdown.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -15,7 +16,7 @@ if ($projectId < 1) {
 try {
     $pdo = db();
 
-    $project = $pdo->prepare('SELECT id, name FROM projects WHERE id = :id');
+    $project = $pdo->prepare('SELECT id, name, base_url FROM projects WHERE id = :id');
     $project->execute(['id' => $projectId]);
     $proj = $project->fetch();
     if (!$proj) {
@@ -37,6 +38,8 @@ try {
         ? (int) round(($done / $total) * 100)
         : ($row['status'] === 'completed' ? 100 : 0);
 
+    $files = collect_markdown_files(projects_path() . '/' . $projectId);
+
     json_response([
         'project_id' => $projectId,
         'project_name' => $proj['name'],
@@ -52,6 +55,13 @@ try {
         'error' => $row['error'],
         'created_at' => $row['created_at'],
         'updated_at' => $row['updated_at'],
+        'files' => $files,
+        'recent_indexed' => fetch_recent_indexed_sections(
+            $pdo,
+            $projectId,
+            (string) $proj['base_url'],
+            2
+        ),
         'events' => read_evaluation_events($projectId),
     ]);
 } catch (Throwable $e) {

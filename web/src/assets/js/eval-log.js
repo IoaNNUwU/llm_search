@@ -1,4 +1,4 @@
-import { parseJsonResponse } from './utils.js';
+import { parseJsonResponse } from '/assets/js/utils.js';
 
 function formatDuration(totalSeconds) {
     const seconds = Math.max(0, Math.floor(totalSeconds));
@@ -46,7 +46,7 @@ function isCurrentEvent(ev, data) {
     if (data.current_phase === 'section') {
         return ev.phase === 'section' && ev.section_index === data.current_section;
     }
-    if (data.current_phase === 'file') {
+    if (data.current_phase === 'file' || data.current_phase === 'embed') {
         return ev.phase === 'file';
     }
     return false;
@@ -70,13 +70,20 @@ function getIndexedDurationSec(events, index, data) {
         if (events[j].ts) {
             const end = parseIso(events[j].ts);
             if (!end) {
-                return null;
+                break;
             }
+            return Math.max(0, (end.getTime() - start.getTime()) / 1000);
+        }
+    }
+
+    if (data?.updated_at) {
+        const end = parseIso(data.updated_at);
+        if (end && end.getTime() >= start.getTime()) {
             return (end.getTime() - start.getTime()) / 1000;
         }
     }
 
-    return null;
+    return 0;
 }
 
 function makeBadge(text, className = '') {
@@ -209,7 +216,8 @@ function buildUnindexedQueue(data, events) {
         }
     }
 
-    const fileTotal = fileMeta.file_total || Number(data.total_files || 0);
+    const files = Array.isArray(data.files) ? data.files : [];
+    const fileTotal = fileMeta.file_total || Number(data.total_files || 0) || files.length;
     const fileIndex = fileMeta.file_index || Number(data.processed_files || 0) + 1;
     if (fileTotal > 0 && fileIndex > 0) {
         const remainingFiles = fileTotal - fileIndex;
@@ -217,10 +225,13 @@ function buildUnindexedQueue(data, events) {
             const show = Math.min(remainingFiles, 8);
             for (let i = 1; i <= show; i += 1) {
                 const nextIndex = fileIndex + i;
+                const filePath = files[nextIndex - 1] || '';
+                const fileName = filePath ? filePath.split('/').pop() : '';
                 queue.push({
                     kind: 'file',
                     status: 'pending',
-                    title: `Файл ${nextIndex}/${fileTotal}`,
+                    title: fileName || `Файл ${nextIndex}/${fileTotal}`,
+                    file: filePath,
                     file_index: nextIndex,
                     file_total: fileTotal,
                 });
@@ -417,7 +428,10 @@ export function initEvalLog() {
     function renderRecentSections(data, events) {
         if (!logRecentSections || !logRecentList) return;
 
-        const recent = getRecentCompletedIndexed(events, data);
+        let recent = getRecentCompletedIndexed(events, data);
+        if (!recent.length && Array.isArray(data.recent_indexed) && data.recent_indexed.length) {
+            recent = data.recent_indexed;
+        }
         const titleEl = logRecentSections.querySelector('.log-recent-title');
 
         if (!recent.length) {
@@ -456,11 +470,13 @@ export function initEvalLog() {
             fileEl.className = 'log-recent-file';
             fileEl.textContent = entry.file || '—';
 
-            const durationEl = document.createElement('span');
-            durationEl.className = 'log-recent-duration';
-            durationEl.textContent = `Проиндексировано за ${formatDuration(entry.durationSec)}`;
-
-            meta.append(fileEl, durationEl);
+            meta.append(fileEl);
+            if (entry.durationSec != null) {
+                const durationEl = document.createElement('span');
+                durationEl.className = 'log-recent-duration';
+                durationEl.textContent = `Проиндексировано за ${formatDuration(entry.durationSec)}`;
+                meta.append(durationEl);
+            }
             item.append(main, meta);
             logRecentList.append(item);
         });

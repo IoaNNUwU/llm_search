@@ -1,4 +1,4 @@
-import { postProjectAction, statusLabel } from './utils.js';
+import { postProjectAction, statusLabel } from '/assets/js/utils.js';
 
 export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedProjectIds, updateChatContext, setProjectsCache }) {
     const projectList = document.getElementById('project-list');
@@ -112,6 +112,25 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
                 });
                 actions.append(logBtn);
             } else if (ev.status === 'completed' || ev.status === 'failed' || ev.status === 'cancelled') {
+                if (ev.status === 'cancelled' || ev.status === 'failed') {
+                    const continueBtn = document.createElement('button');
+                    continueBtn.type = 'button';
+                    continueBtn.textContent = 'Continue evaluation';
+                    continueBtn.addEventListener('click', async (event) => {
+                        event.stopPropagation();
+                        continueBtn.disabled = true;
+                        try {
+                            await postProjectAction('api/continue.php', p.id);
+                            await loadProjects();
+                            startPolling();
+                        } catch (err) {
+                            alert(err.message);
+                            continueBtn.disabled = false;
+                        }
+                    });
+                    actions.append(continueBtn);
+                }
+
                 const logBtn = document.createElement('button');
                 logBtn.type = 'button';
                 logBtn.textContent = 'View log';

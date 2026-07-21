@@ -1,4 +1,4 @@
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown } from '/assets/js/markdown.js';
 
 const SIDEBAR_KEY = 'sidebarCollapsed';
 

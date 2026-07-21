@@ -24,7 +24,7 @@ function asset_url(string $path): string
     $relative = ltrim(str_replace('\\', '/', $path), '/');
     $full = __DIR__ . '/../assets/' . $relative;
     $version = is_file($full) ? (string) filemtime($full) : (string) time();
-    return 'assets/' . $relative . '?v=' . $version;
+    return '/assets/' . $relative . '?v=' . $version;
 }
 
 function json_response(array $data, int $status = 200): never
@@ -170,6 +170,47 @@ function read_evaluation_events(int $projectId, int $limit = 500): array
     return $events;
 }
 
+/**
+ * Latest indexed sections from DB (independent of the events log).
+ *
+ * @return list<array{kind:string,heading:?string,file:string,message:string}>
+ */
+function fetch_recent_indexed_sections(PDO $pdo, int $projectId, string $baseUrl, int $limit = 2): array
+{
+    $limit = max(1, $limit);
+    $stmt = $pdo->prepare(
+        "SELECT s.title AS heading, a.link AS article_link
+         FROM articles_sections s
+         INNER JOIN articles a ON a.id = s.article_id
+         WHERE a.project_id = :project_id
+         ORDER BY s.id DESC
+         LIMIT {$limit}"
+    );
+    $stmt->execute(['project_id' => $projectId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    if ($rows === []) {
+        return [];
+    }
+
+    $base = rtrim($baseUrl, '/');
+    $out = [];
+    foreach (array_reverse($rows) as $row) {
+        $link = (string) ($row['article_link'] ?? '');
+        $file = $link;
+        if ($base !== '' && str_starts_with($link, "{$base}/")) {
+            $file = substr($link, strlen($base) + 1);
+        }
+        $heading = trim((string) ($row['heading'] ?? ''));
+        $out[] = [
+            'kind' => 'section',
+            'heading' => $heading !== '' ? $heading : null,
+            'file' => $file !== '' ? $file : $link,
+            'message' => '',
+        ];
+    }
+    return $out;
+}
+
 function is_evaluator_running(int $projectId): bool
 {
     $pidFile = evaluation_pid_path($projectId);
@@ -209,7 +250,7 @@ function delete_article_by_link(PDO $pdo, int $projectId, string $link): void
 function evaluation_is_resumable(array $evaluation, int $articleCount): bool
 {
     $status = (string) ($evaluation['status'] ?? '');
-    if (in_array($status, ['processing', 'failed'], true)) {
+    if (in_array($status, ['processing', 'failed', 'cancelled'], true)) {
         return true;
     }
     if ($status === 'pending') {
@@ -356,6 +397,7 @@ function delete_project_storage(int $projectId): void
 
 /**
  * Mark evaluation cancelled and stop the worker if running.
+ * Keeps current_file so a later continue can drop partial work for that file.
  */
 function cancel_project_evaluation(PDO $pdo, int $projectId): bool
 {
@@ -374,17 +416,44 @@ function cancel_project_evaluation(PDO $pdo, int $projectId): bool
     $update = $pdo->prepare(
         "UPDATE project_evaluations
          SET status = 'cancelled',
-             current_file = NULL,
-             current_phase = NULL,
-             current_section = NULL,
-             total_sections = NULL,
-             current_detail = NULL,
              error = NULL,
              updated_at = NOW()
          WHERE id = :id"
     );
     $update->execute(['id' => (int) $row['id']]);
     kill_evaluator($projectId);
+    return true;
+}
+
+/**
+ * Continue a cancelled or failed evaluation from where it left off.
+ */
+function continue_project_evaluation(PDO $pdo, int $projectId): bool
+{
+    $stmt = $pdo->prepare(
+        'SELECT id, status FROM project_evaluations WHERE project_id = :id ORDER BY id DESC LIMIT 1'
+    );
+    $stmt->execute(['id' => $projectId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return false;
+    }
+    if (!in_array($row['status'], ['cancelled', 'failed'], true)) {
+        return false;
+    }
+    if (is_evaluator_running($projectId)) {
+        return false;
+    }
+
+    $update = $pdo->prepare(
+        "UPDATE project_evaluations
+         SET status = 'pending',
+             error = NULL,
+             updated_at = NOW()
+         WHERE id = :id"
+    );
+    $update->execute(['id' => (int) $row['id']]);
+    spawn_evaluator($projectId);
     return true;
 }
 
