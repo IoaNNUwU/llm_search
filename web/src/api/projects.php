@@ -14,6 +14,7 @@ try {
             p.name,
             p.description,
             p.base_url,
+            p.project_type,
             e.status AS eval_status,
             e.total_files,
             e.processed_files,
@@ -45,6 +46,7 @@ try {
             'name' => $row['name'],
             'description' => $row['description'],
             'base_url' => $row['base_url'],
+            'project_type' => $row['project_type'],
             'evaluation' => [
                 'status' => $row['eval_status'] ?? 'unknown',
                 'total_files' => $total,

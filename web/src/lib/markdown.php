@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/project_types.php';
 
 /**
  * Split markdown into sections by headers (# ## ### …).
@@ -69,7 +70,7 @@ function split_by_headers(string $markdown): array
  *
  * @return list<string>
  */
-function collect_markdown_files(string $root): array
+function collect_markdown_files(string $root, ?ProjectType $projectType = null): array
 {
     $root = rtrim($root, '/\\');
     if (!is_dir($root)) {
@@ -86,12 +87,15 @@ function collect_markdown_files(string $root): array
         if (!$file->isFile()) {
             continue;
         }
-        if (strtolower($file->getExtension()) !== 'md') {
-            continue;
-        }
         $full = $file->getPathname();
         $rel = substr($full, strlen($root) + 1);
         $rel = str_replace('\\', '/', $rel);
+        if (
+            strtolower($file->getExtension()) !== 'md'
+            || ($projectType !== null && !$projectType->acceptsFile($rel))
+        ) {
+            continue;
+        }
         $files[] = $rel;
     }
 
@@ -99,45 +103,14 @@ function collect_markdown_files(string $root): array
     return $files;
 }
 
-function project_file_link_legacy(string $baseUrl, string $relativePath): string
+function is_file_indexed(
+    array $indexedLinks,
+    ProjectType $projectType,
+    string $baseUrl,
+    string $relativePath
+): bool
 {
-    $base = rtrim($baseUrl, '/');
-    $path = ltrim(str_replace('\\', '/', $relativePath), '/');
-
-    return $base . '/' . $path;
-}
-
-function project_file_link(string $baseUrl, string $relativePath): string
-{
-    $base = rtrim($baseUrl, '/');
-    $path = ltrim(str_replace('\\', '/', $relativePath), '/');
-
-    // Uploaded folders include their root name (e.g. "docs/inzhenery/file.md") — omit it from links.
-    if (str_contains($path, '/')) {
-        $path = substr($path, strpos($path, '/') + 1);
-    }
-
-    if (str_ends_with(strtolower($path), '.md')) {
-        $path = substr($path, 0, -3);
-    }
-
-    return $base . '/' . $path;
-}
-
-/**
- * @return list<string>
- */
-function project_file_link_variants(string $baseUrl, string $relativePath): array
-{
-    return array_values(array_unique([
-        project_file_link($baseUrl, $relativePath),
-        project_file_link_legacy($baseUrl, $relativePath),
-    ]));
-}
-
-function is_file_indexed(array $indexedLinks, string $baseUrl, string $relativePath): bool
-{
-    foreach (project_file_link_variants($baseUrl, $relativePath) as $link) {
+    foreach ($projectType->articleLinkVariants($baseUrl, $relativePath) as $link) {
         if (isset($indexedLinks[$link])) {
             return true;
         }
@@ -145,9 +118,15 @@ function is_file_indexed(array $indexedLinks, string $baseUrl, string $relativeP
     return false;
 }
 
-function delete_articles_for_file(PDO $pdo, int $projectId, string $baseUrl, string $relativePath): void
+function delete_articles_for_file(
+    PDO $pdo,
+    int $projectId,
+    ProjectType $projectType,
+    string $baseUrl,
+    string $relativePath
+): void
 {
-    foreach (project_file_link_variants($baseUrl, $relativePath) as $link) {
+    foreach ($projectType->articleLinkVariants($baseUrl, $relativePath) as $link) {
         $stmt = $pdo->prepare('SELECT id FROM articles WHERE project_id = :project_id AND link = :link');
         $stmt->execute(['project_id' => $projectId, 'link' => $link]);
         $id = $stmt->fetchColumn();

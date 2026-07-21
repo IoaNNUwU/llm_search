@@ -5,7 +5,8 @@ CREATE TABLE projects (
 
     base_url          TEXT               NOT NULL,
     name              TEXT               NOT NULL,
-    description       TEXT               NOT NULL
+    description       TEXT               NOT NULL,
+    project_type      TEXT               NOT NULL CHECK (project_type IN ('bitrix_api_docs', 'gramax'))
 );
 
 CREATE TABLE articles (

@@ -4,6 +4,25 @@
         <p class="hint">Name and description are stored in the database. Drop a folder (or pick one) — only <code>.md</code> files are uploaded and indexed.</p>
         <div class="form-error" id="upload-error"></div>
         <form id="upload-form">
+            <fieldset class="project-type-field">
+                <legend>Project type</legend>
+                <div class="project-type-options">
+                    <label class="project-type-option">
+                        <input type="radio" name="project_type" value="bitrix_api_docs" checked>
+                        <span class="project-type-card">
+                            <strong>Bitrix API docs</strong>
+                            <small>apidocs.bitrix24.ru</small>
+                        </span>
+                    </label>
+                    <label class="project-type-option">
+                        <input type="radio" name="project_type" value="gramax">
+                        <span class="project-type-card">
+                            <strong>Gramax</strong>
+                            <small>Custom documentation URL</small>
+                        </span>
+                    </label>
+                </div>
+            </fieldset>
             <div class="field">
                 <label for="proj-name">Name</label>
                 <input type="text" id="proj-name" name="name" required maxlength="200" autocomplete="off">
@@ -12,8 +31,8 @@
                 <label for="proj-desc">Description</label>
                 <textarea id="proj-desc" name="description" rows="3" required maxlength="2000"></textarea>
             </div>
-            <div class="field">
-                <label for="proj-base">Base URL <span style="opacity:.7">(optional — used for article links)</span></label>
+            <div class="field" id="proj-base-field" hidden>
+                <label for="proj-base">Gramax project URL</label>
                 <input type="url" id="proj-base" name="base_url" placeholder="https://docs.example.com">
             </div>
             <div class="dropzone" id="dropzone" tabindex="0">

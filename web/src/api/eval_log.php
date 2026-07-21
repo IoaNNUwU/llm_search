@@ -16,7 +16,7 @@ if ($projectId < 1) {
 try {
     $pdo = db();
 
-    $project = $pdo->prepare('SELECT id, name, base_url FROM projects WHERE id = :id');
+    $project = $pdo->prepare('SELECT id, name, base_url, project_type FROM projects WHERE id = :id');
     $project->execute(['id' => $projectId]);
     $proj = $project->fetch();
     if (!$proj) {
@@ -38,7 +38,10 @@ try {
         ? (int) round(($done / $total) * 100)
         : ($row['status'] === 'completed' ? 100 : 0);
 
-    $files = collect_markdown_files(projects_path() . '/' . $projectId);
+    $files = collect_markdown_files(
+        projects_path() . '/' . $projectId,
+        project_type((string) $proj['project_type'])
+    );
 
     json_response([
         'project_id' => $projectId,

@@ -4,7 +4,7 @@ Link to GitHub repo: https://github.com/bitrix-tools/b24-rest-docs.git - do not 
 
 Uploaded folder of this type gets converted to link showed by AGENT:
 
-0. Ignore files starting with underscore `_`.
+0. Ignore files and folders (including nested) starting with underscore `_`.
 1. Strip uploaded folder name.
 2. Strip `.md` suffix.
 3. Concatenate `https://apidocs.bitrix24.ru/` with a path.

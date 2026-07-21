@@ -950,6 +950,84 @@ button:disabled {
     margin-bottom: 0.75rem;
 }
 
+.project-type-field {
+    min-width: 0;
+    margin: 0 0 0.75rem;
+    padding: 0;
+    border: 0;
+}
+
+.project-type-field legend {
+    margin-bottom: 0.3rem;
+    padding: 0;
+    font-size: 0.75rem;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+}
+
+.project-type-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+.project-type-option {
+    flex: 1 1 9rem;
+    min-width: 0;
+    cursor: pointer;
+}
+
+.project-type-option input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.project-type-card {
+    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--bg) 35%, transparent);
+    color: var(--muted);
+    text-align: center;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.project-type-card strong {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.project-type-card small {
+    font-size: 0.7rem;
+    line-height: 1.35;
+}
+
+.project-type-option:hover .project-type-card {
+    border-color: var(--muted);
+    color: var(--text);
+}
+
+.project-type-option input:checked + .project-type-card {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.project-type-option input:focus-visible + .project-type-card {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 2px;
+}
+
 .field label {
     display: block;
     font-size: 0.75rem;

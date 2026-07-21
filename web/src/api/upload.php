@@ -7,6 +7,7 @@ ini_set('display_errors', '0');
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/ollama.php';
 require_once __DIR__ . '/../lib/helpers.php';
+require_once __DIR__ . '/../lib/project_types.php';
 
 set_exception_handler(static function (Throwable $e): void {
     json_response(['error' => $e->getMessage()], 500);
@@ -30,14 +31,15 @@ if ($contentLength > 0 && empty($_POST) && empty($_FILES)) {
 
 $name = trim((string) ($_POST['name'] ?? ''));
 $description = trim((string) ($_POST['description'] ?? ''));
-$baseUrl = trim((string) ($_POST['base_url'] ?? ''));
+try {
+    $projectType = project_type(trim((string) ($_POST['project_type'] ?? '')));
+    $baseUrl = $projectType->baseUrl((string) ($_POST['base_url'] ?? ''));
+} catch (InvalidArgumentException $e) {
+    json_response(['error' => $e->getMessage()], 400);
+}
 
 if ($name === '' || $description === '') {
     json_response(['error' => 'Name and description are required'], 400);
-}
-
-if ($baseUrl === '') {
-    $baseUrl = 'https://docs.local/' . slugify($name);
 }
 
 if (!isset($_FILES['files']) || !is_array($_FILES['files']['name'])) {
@@ -76,7 +78,7 @@ for ($i = 0; $i < $fileCount; $i++) {
     $rel = ltrim($rel, '/');
     // Strip leading folder name from webkitdirectory paths (keep nested structure).
     // Browser sends "RootFolder/sub/file.md" — keep as-is under project dir.
-    if ($rel === '' || str_contains($rel, '..')) {
+    if ($rel === '' || str_contains($rel, '..') || !$projectType->acceptsFile($rel)) {
         continue;
     }
     $entries[] = ['tmp' => $tmp, 'rel' => $rel];
@@ -95,14 +97,15 @@ try {
     $pdo->beginTransaction();
 
     $stmt = $pdo->prepare(
-        'INSERT INTO projects (base_url, name, description)
-         VALUES (:base_url, :name, :description)
+        'INSERT INTO projects (base_url, name, description, project_type)
+         VALUES (:base_url, :name, :description, :project_type)
          RETURNING id'
     );
     $stmt->execute([
         'base_url' => $baseUrl,
         'name' => $name,
         'description' => $description,
+        'project_type' => $projectType->key(),
     ]);
     $projectId = (int) $stmt->fetchColumn();
 
@@ -146,10 +149,7 @@ try {
          VALUES (:project_id, :status, :total_files, 0)
          RETURNING id'
     );
-    $mdCount = count(array_filter(
-        $entries,
-        static fn (array $e): bool => str_ends_with(strtolower($e['rel']), '.md')
-    ));
+    $mdCount = count($entries);
     $eval->execute([
         'project_id' => $projectId,
         'status' => 'pending',

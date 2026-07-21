@@ -30,6 +30,10 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
     const progressFill = document.getElementById('upload-progress-fill');
     const progressLabel = document.getElementById('upload-progress-label');
     const progressBar = progressWrap?.querySelector('.log-progress-bar');
+    const baseUrlField = document.getElementById('proj-base-field');
+    const baseUrlInput = document.getElementById('proj-base');
+    const projectTypeInputs = Array.from(document.querySelectorAll('input[name="project_type"]'));
+    let selectedFiles = [];
     let pendingFiles = [];
 
     function setProgress(pct, label) {
@@ -49,11 +53,33 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
         setProgress(0, 'Uploading…');
     }
 
-    function setPendingFiles(files) {
-        pendingFiles = files.filter((item) => isMarkdownPath(item.path || item.file?.name));
+    function selectedProjectType() {
+        return projectTypeInputs.find((input) => input.checked)?.value || 'bitrix_api_docs';
+    }
+
+    function refreshPendingFiles() {
+        const type = selectedProjectType();
+        pendingFiles = selectedFiles.filter((item) => {
+            const path = item.path || item.file?.name || '';
+            if (!isMarkdownPath(path)) return false;
+            if (type !== 'bitrix_api_docs') return true;
+            return !path.replaceAll('\\', '/').split('/').some((segment) => segment.startsWith('_'));
+        });
         dzFiles.textContent = pendingFiles.length
             ? `${pendingFiles.length} markdown file(s) selected`
             : 'No .md files found in that folder';
+    }
+
+    function setPendingFiles(files) {
+        selectedFiles = files;
+        refreshPendingFiles();
+    }
+
+    function updateProjectTypeFields() {
+        const isGramax = selectedProjectType() === 'gramax';
+        baseUrlField.hidden = !isGramax;
+        baseUrlInput.required = isGramax;
+        refreshPendingFiles();
     }
 
     function openModal() {
@@ -61,8 +87,10 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
         uploadError.textContent = '';
         hideProgress();
         document.getElementById('upload-form').reset();
+        selectedFiles = [];
         pendingFiles = [];
         dzFiles.textContent = '';
+        updateProjectTypeFields();
         modal.classList.add('open');
         document.getElementById('proj-name').focus();
     }
@@ -74,6 +102,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
 
     document.getElementById('btn-new-project').addEventListener('click', openModal);
     document.getElementById('upload-cancel').addEventListener('click', closeModal);
+    projectTypeInputs.forEach((input) => input.addEventListener('change', updateProjectTypeFields));
     modal.addEventListener('click', (e) => {
         if (e.target === modal) closeModal();
     });
@@ -172,6 +201,7 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
         const formData = new FormData();
         formData.append('name', document.getElementById('proj-name').value.trim());
         formData.append('description', document.getElementById('proj-desc').value.trim());
+        formData.append('project_type', selectedProjectType());
         formData.append('base_url', document.getElementById('proj-base').value.trim());
 
         pendingFiles.forEach((item, i) => {

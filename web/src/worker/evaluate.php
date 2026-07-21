@@ -48,6 +48,7 @@ if (!$evaluation) {
 
 $evaluationId = (int) $evaluation['id'];
 $storageDir = projects_path() . '/' . $projectId;
+$projectType = project_type((string) $row['project_type']);
 
 function update_evaluation(PDO $pdo, int $id, array $fields): void
 {
@@ -233,7 +234,7 @@ try {
     $articleCount = (int) $articleCountStmt->fetchColumn();
     $resume = evaluation_is_resumable($evaluation, $articleCount);
 
-    $files = collect_markdown_files($storageDir);
+    $files = collect_markdown_files($storageDir, $projectType);
     $baseUrl = (string) $row['base_url'];
     $fileTotal = count($files);
     $embedModel = ollama_embed_model();
@@ -241,7 +242,7 @@ try {
     if ($resume) {
         $currentFile = trim((string) ($evaluation['current_file'] ?? ''));
         if ($currentFile !== '') {
-            delete_articles_for_file($pdo, $projectId, $baseUrl, $currentFile);
+            delete_articles_for_file($pdo, $projectId, $projectType, $baseUrl, $currentFile);
         }
         append_evaluation_event($projectId, [
             'phase' => 'resume',
@@ -256,7 +257,7 @@ try {
 
     $processed = 0;
     foreach ($files as $relPath) {
-        if (is_file_indexed($indexedLinks, $baseUrl, $relPath)) {
+        if (is_file_indexed($indexedLinks, $projectType, $baseUrl, $relPath)) {
             $processed++;
         }
     }
@@ -297,7 +298,7 @@ try {
     foreach ($files as $fileIndex => $relPath) {
         assert_not_cancelled($pdo, $evaluationId);
 
-        $link = project_file_link($baseUrl, $relPath);
+        $link = $projectType->articleLink($baseUrl, $relPath);
         $existingArticleId = find_article_id_by_link($pdo, $projectId, $link);
         if ($existingArticleId !== null) {
             update_evaluation($pdo, $evaluationId, [
