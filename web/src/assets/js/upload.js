@@ -102,10 +102,8 @@ export function initUpload({ addSelectedProjectId, loadProjects, startPolling })
 
     document.getElementById('btn-new-project').addEventListener('click', openModal);
     document.getElementById('upload-cancel').addEventListener('click', closeModal);
+    document.getElementById('upload-close').addEventListener('click', closeModal);
     projectTypeInputs.forEach((input) => input.addEventListener('change', updateProjectTypeFields));
-    modal.addEventListener('click', (e) => {
-        if (e.target === modal) closeModal();
-    });
 
     dropzone.addEventListener('click', () => folderInput.click());
     dropzone.addEventListener('keydown', (e) => {

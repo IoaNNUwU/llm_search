@@ -1,6 +1,9 @@
 <div class="modal-backdrop" id="upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <div class="modal">
-        <h3 id="upload-title">Upload project</h3>
+        <div class="modal-header">
+            <h3 id="upload-title">Upload project</h3>
+            <button type="button" class="modal-close" id="upload-close" aria-label="Close">&times;</button>
+        </div>
         <p class="hint">Name and description are stored in the database. Drop a folder (or pick one) — only <code>.md</code> files are uploaded and indexed.</p>
         <div class="form-error" id="upload-error"></div>
         <form id="upload-form">
