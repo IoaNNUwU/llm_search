@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/helpers.php';
 require_once __DIR__ . '/../lib/markdown.php';
+require_once __DIR__ . '/../lib/enrichment.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -41,10 +42,20 @@ try {
     $searchablePercent = $total > 0
         ? (int) round(($searchable / $total) * 100)
         : ($row['status'] === 'completed' ? 100 : 0);
+    $enrichment = project_enrichment_progress($pdo, $projectId, $total);
 
+    $projectType = project_type((string) $proj['project_type']);
+    $baseUrl = (string) $proj['base_url'];
     $files = collect_markdown_files(
         projects_path() . '/' . $projectId,
-        project_type((string) $proj['project_type'])
+        $projectType
+    );
+    $enrichmentActivity = project_enrichment_activity(
+        $pdo,
+        $projectId,
+        $projectType,
+        $baseUrl,
+        $files
     );
 
     json_response([
@@ -68,11 +79,11 @@ try {
         'recent_indexed' => fetch_recent_indexed_sections(
             $pdo,
             $projectId,
-            (string) $proj['base_url'],
+            $baseUrl,
             2
         ),
         'events' => read_evaluation_events($projectId),
-    ]);
+    ] + $enrichment + $enrichmentActivity);
 } catch (Throwable $e) {
     json_response(['error' => $e->getMessage()], 500);
 }

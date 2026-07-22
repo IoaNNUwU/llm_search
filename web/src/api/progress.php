@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/db.php';
+require_once __DIR__ . '/../lib/enrichment.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -31,6 +32,7 @@ try {
     $searchablePercent = $total > 0
         ? (int) round(($searchable / $total) * 100)
         : ($row['status'] === 'completed' ? 100 : 0);
+    $enrichment = project_enrichment_progress($pdo, $projectId, $total);
 
     json_response([
         'project_id' => $projectId,
@@ -47,7 +49,7 @@ try {
         'percent' => $percent,
         'searchable_percent' => $searchablePercent,
         'updated_at' => $row['updated_at'],
-    ]);
+    ] + $enrichment);
 } catch (Throwable $e) {
     json_response(['error' => $e->getMessage()], 500);
 }

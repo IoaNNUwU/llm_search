@@ -1239,6 +1239,32 @@ button:disabled {
     background: #51c997;
 }
 
+.eval-bar > .progress-enrichment-segment,
+.log-progress-bar > .progress-enrichment-segment {
+    min-width: 1px;
+    background: #83d8f4;
+    z-index: 4;
+    transition: opacity 0.2s ease;
+}
+
+.progress-enrichment-segment.is-queued {
+    opacity: 0.42;
+}
+
+.progress-enrichment-segment.is-processing {
+    opacity: 0.82;
+    animation: enrichment-pulse 1s ease-in-out infinite;
+}
+
+.progress-enrichment-segment.is-completed {
+    opacity: 1;
+}
+
+@keyframes enrichment-pulse {
+    0%, 100% { filter: brightness(0.9); }
+    50% { filter: brightness(1.35); }
+}
+
 .log-progress-label {
     margin-top: 0.35rem;
     font-family: var(--mono);
@@ -1355,6 +1381,12 @@ button:disabled {
     color: var(--orange);
     border-color: color-mix(in srgb, var(--orange) 35%, var(--border));
     background: color-mix(in srgb, var(--orange) 10%, var(--bg));
+}
+
+.log-badge-enrich {
+    color: #7ec8e8;
+    border-color: color-mix(in srgb, #7ec8e8 45%, var(--border));
+    background: color-mix(in srgb, #7ec8e8 14%, var(--bg));
 }
 
 .log-current .path {

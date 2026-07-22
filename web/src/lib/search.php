@@ -161,6 +161,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
             COALESCE(s.description, '') AS description,
             s.content,
             s.link,
+            a.id AS article_id,
             a.title AS article_title,
             a.link AS article_link,
             a.project_id,
@@ -198,6 +199,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
     $hasVectorStmt->execute(array_merge($ids, [$embedModel]));
 
     $vectorHits = [];
+    $embeddingSql = null;
     if ($hasVectorStmt->fetchColumn()) {
         $embeddingSql = embedding_to_sql(ollama_embed($query));
         $vectorSql = <<<SQL
@@ -210,6 +212,7 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
                 COALESCE(s.description, '') AS description,
                 s.content,
                 s.link,
+                a.id AS article_id,
                 a.title AS article_title,
                 a.link AS article_link,
                 a.project_id,
@@ -232,7 +235,159 @@ function search_project_sections(PDO $pdo, array|int $projectIds, string $query,
         $vectorHits = rerank_hits_with_lexical_boost($query, $vectorHits);
     }
 
-    return merge_section_search_hits($lexicalHits, $vectorHits, $limit);
+    $enrichmentHits = search_enriched_article_sections(
+        $pdo,
+        $ids,
+        $query,
+        $embeddingSql,
+        $embedModel,
+        $candidateLimit
+    );
+
+    return merge_section_search_hits($lexicalHits, $vectorHits, $enrichmentHits, $limit);
+}
+
+/**
+ * Find articles through Qwen-generated sidecar metadata, then return their
+ * nearest original sections so generated text never replaces source facts.
+ *
+ * @param list<int> $projectIds
+ * @return list<array<string, mixed>>
+ */
+function search_enriched_article_sections(
+    PDO $pdo,
+    array $projectIds,
+    string $query,
+    ?string $embeddingSql,
+    string $embedModel,
+    int $candidateLimit
+): array {
+    $projectPlaceholders = implode(', ', array_fill(0, count($projectIds), '?'));
+    $articleScores = [];
+
+    $ftsSql = <<<SQL
+        WITH q AS (
+            SELECT websearch_to_tsquery('simple'::regconfig, ?) AS v
+        )
+        SELECT ae.article_id
+        FROM article_enrichments ae
+        INNER JOIN articles a ON a.id = ae.article_id
+        CROSS JOIN q
+        WHERE a.project_id IN ({$projectPlaceholders})
+          AND ae.search_vector @@ q.v
+        ORDER BY ts_rank_cd(ae.search_vector, q.v) DESC
+        LIMIT ?
+    SQL;
+    $fts = $pdo->prepare($ftsSql);
+    $fts->execute(array_merge([$query], $projectIds, [$candidateLimit]));
+    foreach ($fts->fetchAll(PDO::FETCH_COLUMN) as $rank => $articleId) {
+        $id = (int) $articleId;
+        $articleScores[$id] = ($articleScores[$id] ?? 0.0) + 1.0 / (60 + $rank + 1);
+    }
+
+    if ($embeddingSql !== null) {
+        $vectorSql = <<<SQL
+            WITH q AS (
+                SELECT CAST(? AS vector) AS v
+            )
+            SELECT ae.article_id
+            FROM article_enrichments ae
+            INNER JOIN articles a ON a.id = ae.article_id
+            CROSS JOIN q
+            WHERE a.project_id IN ({$projectPlaceholders})
+              AND ae.embed_model = ?
+            ORDER BY ae.embedding <=> q.v
+            LIMIT ?
+        SQL;
+        $vector = $pdo->prepare($vectorSql);
+        $vector->execute(array_merge(
+            [$embeddingSql],
+            $projectIds,
+            [$embedModel, $candidateLimit]
+        ));
+        foreach ($vector->fetchAll(PDO::FETCH_COLUMN) as $rank => $articleId) {
+            $id = (int) $articleId;
+            $articleScores[$id] = ($articleScores[$id] ?? 0.0) + 1.0 / (60 + $rank + 1);
+        }
+    }
+
+    if ($articleScores === []) {
+        return [];
+    }
+    arsort($articleScores, SORT_NUMERIC);
+    $articleIds = array_slice(array_keys($articleScores), 0, min(10, $candidateLimit));
+    $articlePlaceholders = implode(', ', array_fill(0, count($articleIds), '?'));
+
+    if ($embeddingSql !== null) {
+        $sectionsSql = <<<SQL
+            WITH q AS (
+                SELECT CAST(? AS vector) AS v
+            ), ranked AS (
+                SELECT
+                    s.id,
+                    COALESCE(NULLIF(TRIM(s.title), ''), a.title) AS title,
+                    COALESCE(s.description, '') AS description,
+                    s.content,
+                    s.link,
+                    a.id AS article_id,
+                    a.title AS article_title,
+                    a.link AS article_link,
+                    a.project_id,
+                    p.name AS project_name,
+                    (se.embedding <=> q.v) AS distance,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY a.id
+                        ORDER BY se.embedding <=> q.v
+                    ) AS article_rank
+                FROM articles_sections s
+                INNER JOIN article_section_embeddings se
+                  ON se.section_id = s.id AND se.model = ?
+                INNER JOIN articles a ON a.id = s.article_id
+                INNER JOIN projects p ON p.id = a.project_id
+                CROSS JOIN q
+                WHERE a.id IN ({$articlePlaceholders})
+            )
+            SELECT *
+            FROM ranked
+            WHERE article_rank <= 2
+            ORDER BY distance
+            LIMIT ?
+        SQL;
+        $sections = $pdo->prepare($sectionsSql);
+        $sections->execute(array_merge(
+            [$embeddingSql, $embedModel],
+            $articleIds,
+            [$candidateLimit]
+        ));
+    } else {
+        $sectionsSql = <<<SQL
+            SELECT DISTINCT ON (a.id)
+                s.id,
+                COALESCE(NULLIF(TRIM(s.title), ''), a.title) AS title,
+                COALESCE(s.description, '') AS description,
+                s.content,
+                s.link,
+                a.id AS article_id,
+                a.title AS article_title,
+                a.link AS article_link,
+                a.project_id,
+                p.name AS project_name,
+                1.0 AS distance
+            FROM articles_sections s
+            INNER JOIN articles a ON a.id = s.article_id
+            INNER JOIN projects p ON p.id = a.project_id
+            WHERE a.id IN ({$articlePlaceholders})
+            ORDER BY a.id, s.id
+        SQL;
+        $sections = $pdo->prepare($sectionsSql);
+        $sections->execute($articleIds);
+    }
+
+    $hits = [];
+    foreach ($sections->fetchAll() as $row) {
+        $hits[] = section_search_hit($row, (float) $row['distance']);
+    }
+    return $hits;
 }
 
 /**
@@ -246,6 +401,7 @@ function section_search_hit(array $row, float $distance, ?float $ftsRank = null)
         'description' => (string) $row['description'],
         'content' => (string) $row['content'],
         'link' => (string) $row['link'],
+        'article_id' => (int) $row['article_id'],
         'article_title' => (string) $row['article_title'],
         'article_link' => (string) $row['article_link'],
         'project_id' => (int) $row['project_id'],
@@ -263,12 +419,23 @@ function section_search_hit(array $row, float $distance, ?float $ftsRank = null)
  *
  * @param list<array<string, mixed>> $lexicalHits
  * @param list<array<string, mixed>> $vectorHits
+ * @param list<array<string, mixed>> $enrichmentHits
  * @return list<array<string, mixed>>
  */
-function merge_section_search_hits(array $lexicalHits, array $vectorHits, int $limit): array
+function merge_section_search_hits(
+    array $lexicalHits,
+    array $vectorHits,
+    array $enrichmentHits,
+    int $limit
+): array
 {
     $merged = [];
-    foreach ([$lexicalHits, $vectorHits] as $sourceIndex => $hits) {
+    $sources = [
+        'fulltext' => $lexicalHits,
+        'vector' => $vectorHits,
+        'enrichment' => $enrichmentHits,
+    ];
+    foreach ($sources as $sourceName => $hits) {
         foreach ($hits as $rank => $hit) {
             $id = (int) $hit['id'];
             if (!isset($merged[$id])) {
@@ -277,12 +444,12 @@ function merge_section_search_hits(array $lexicalHits, array $vectorHits, int $l
                     'score' => 0.0,
                     'sources' => [],
                 ];
-            } elseif ($sourceIndex === 1) {
+            } elseif ($sourceName === 'vector') {
                 $merged[$id]['hit']['distance'] = $hit['distance'];
                 $merged[$id]['hit']['lexical_boost'] = $hit['lexical_boost'] ?? 0.0;
             }
             $merged[$id]['score'] += 1.0 / (60 + $rank + 1);
-            $merged[$id]['sources'][] = $sourceIndex === 0 ? 'fulltext' : 'vector';
+            $merged[$id]['sources'][] = $sourceName;
         }
     }
 

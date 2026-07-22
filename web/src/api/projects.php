@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/db.php';
+require_once __DIR__ . '/../lib/enrichment.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -37,7 +38,7 @@ try {
     SQL;
 
     $rows = $pdo->query($sql)->fetchAll();
-    $projects = array_map(static function (array $row): array {
+    $projects = array_map(static function (array $row) use ($pdo): array {
         $total = (int) ($row['total_files'] ?? 0);
         $searchable = (int) ($row['searchable_files'] ?? 0);
         $done = (int) ($row['processed_files'] ?? 0);
@@ -45,6 +46,7 @@ try {
         $searchablePercent = $total > 0
             ? (int) round(($searchable / $total) * 100)
             : ($row['eval_status'] === 'completed' ? 100 : 0);
+        $enrichment = project_enrichment_progress($pdo, (int) $row['id'], $total);
 
         return [
             'id' => (int) $row['id'],
@@ -65,7 +67,7 @@ try {
                 'percent' => $percent,
                 'searchable_percent' => $searchablePercent,
                 'updated_at' => $row['eval_updated_at'],
-            ],
+            ] + $enrichment,
         ];
     }, $rows);
 

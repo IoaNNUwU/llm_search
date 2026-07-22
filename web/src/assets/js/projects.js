@@ -1,4 +1,4 @@
-import { postProjectAction, statusLabel } from '/assets/js/utils.js';
+import { postProjectAction, renderEnrichmentSegments, statusLabel } from '/assets/js/utils.js';
 
 export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedProjectIds, updateChatContext, setProjectsCache }) {
     const projectList = document.getElementById('project-list');
@@ -46,10 +46,10 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
 
             item.append(name, badge, desc);
 
-            if (ev.status === 'processing' || ev.status === 'pending') {
+            if ((ev.total_files || 0) > 0) {
                 const bar = document.createElement('div');
                 bar.className = 'eval-bar';
-                bar.title = `Полнотекстовый поиск: ${ev.searchable_files || 0}/${ev.total_files || 0}; финальный индекс: ${ev.processed_files || 0}/${ev.total_files || 0}`;
+                bar.title = `Полнотекстовый поиск: ${ev.searchable_files || 0}/${ev.total_files || 0}; финальный индекс: ${ev.processed_files || 0}/${ev.total_files || 0}; Qwen enrichment: ${ev.enriched_files || 0}/${ev.total_files || 0}`;
                 const searchableFill = document.createElement('span');
                 searchableFill.className = 'eval-bar-searchable';
                 searchableFill.style.width = (ev.searchable_percent || 0) + '%';
@@ -57,9 +57,10 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
                 indexedFill.className = 'eval-bar-indexed';
                 indexedFill.style.width = (ev.percent || 0) + '%';
                 bar.append(searchableFill, indexedFill);
+                renderEnrichmentSegments(bar, ev);
                 item.append(bar);
 
-                if (ev.current_file) {
+                if ((ev.status === 'processing' || ev.status === 'pending') && ev.current_file) {
                     const detail = document.createElement('div');
                     detail.className = 'eval-detail';
                     detail.textContent = ev.current_file;
@@ -70,7 +71,8 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
                     detail.textContent = 'Waiting to start…';
                     item.append(detail);
                 }
-            } else if (ev.status === 'failed' && ev.error) {
+            }
+            if (ev.status === 'failed' && ev.error) {
                 const detail = document.createElement('div');
                 detail.className = 'eval-detail';
                 detail.style.color = 'var(--danger)';
@@ -200,7 +202,10 @@ export function initProjects({ openEvalLog, getSelectedProjectIds, setSelectedPr
             renderProjects(data.projects || []);
 
             const busy = (data.projects || []).some((p) =>
-                p.evaluation && ['processing', 'pending', 'failed'].includes(p.evaluation.status)
+                p.evaluation && (
+                    ['processing', 'pending', 'failed'].includes(p.evaluation.status)
+                    || (p.evaluation.enrichment_pending_files || 0) > 0
+                )
             );
             if (busy && !pollTimer) {
                 pollTimer = setInterval(loadProjects, 2000);

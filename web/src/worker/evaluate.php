@@ -353,6 +353,11 @@ try {
          VALUES (:article_id, :title, :description, :content, :link)
          RETURNING id'
     );
+    $insertEnrichmentJob = $pdo->prepare(
+        'INSERT INTO article_enrichment_jobs (article_id)
+         VALUES (:article_id)
+         ON CONFLICT (article_id) DO NOTHING'
+    );
 
     // Phase 1: prepare Markdown outside a transaction, then commit bounded
     // batches. Every committed batch becomes immediately available to FTS.
@@ -435,6 +440,7 @@ try {
                     'link' => $prepared['link'],
                 ]);
                 $articleId = (int) $insertArticle->fetchColumn();
+                $insertEnrichmentJob->execute(['article_id' => $articleId]);
 
                 $lastAnchor = null;
                 foreach ($prepared['sections'] as $sectionIndex => $section) {

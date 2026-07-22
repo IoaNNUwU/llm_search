@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/enrichment.php';
+
 const MAX_HISTORY = 20;
 
 /**
@@ -189,6 +191,11 @@ function chat_handle_post(string $ollamaModel): array
                 );
                 $ragLimit = min(count($hits), RAG_SECTION_LIMIT * max(1, count($resolvedIds)));
                 $ragHits = array_slice($hits, 0, $ragLimit);
+                try {
+                    record_article_search_hits($pdo, $ragHits);
+                } catch (Throwable) {
+                    // Popularity tracking must never break the user request.
+                }
             }
         }
 

@@ -1,4 +1,4 @@
-import { parseJsonResponse } from '/assets/js/utils.js';
+import { parseJsonResponse, renderEnrichmentSegments } from '/assets/js/utils.js';
 
 function formatDuration(totalSeconds) {
     const seconds = Math.max(0, Math.floor(totalSeconds));
@@ -54,7 +54,7 @@ function isCurrentEvent(ev, data) {
 
 function getIndexedDurationSec(events, index, data) {
     const ev = events[index];
-    if (!ev || (ev.phase !== 'section' && ev.phase !== 'file') || !ev.ts) {
+    if (!ev || (ev.phase !== 'section' && ev.phase !== 'file' && ev.phase !== 'enrich_done') || !ev.ts) {
         return null;
     }
     if (data && isCurrentEvent(ev, data)) {
@@ -64,6 +64,27 @@ function getIndexedDurationSec(events, index, data) {
     const start = parseIso(ev.ts);
     if (!start) {
         return null;
+    }
+
+    // For enrich_done, duration is from the preceding enrich event for same article/file.
+    if (ev.phase === 'enrich_done') {
+        for (let j = index - 1; j >= 0; j -= 1) {
+            const prev = events[j];
+            if (prev.phase !== 'enrich' || !prev.ts) {
+                continue;
+            }
+            if (
+                (ev.article_id && prev.article_id === ev.article_id)
+                || (ev.file && prev.file === ev.file)
+            ) {
+                const prevStart = parseIso(prev.ts);
+                if (!prevStart) {
+                    break;
+                }
+                return Math.max(0, (start.getTime() - prevStart.getTime()) / 1000);
+            }
+        }
+        return 0;
     }
 
     for (let j = index + 1; j < events.length; j += 1) {
@@ -145,6 +166,9 @@ function fileSummary(entry) {
 }
 
 function indexedSummary(entry) {
+    if (entry.kind === 'enrich_done' || entry.kind === 'enrich') {
+        return entry.message || `Qwen: ${entry.file || 'статья'}`;
+    }
     return entry.kind === 'file' ? fileSummary(entry) : sectionSummary(entry);
 }
 
@@ -173,10 +197,13 @@ function findCurrentFileMeta(events, data) {
 
 /**
  * Build a compact queue of not-yet-indexed work for the right column.
- * @returns {list<{kind:string,status:string,title:string,file?:string,section_index?:number,section_total?:number,file_index?:number,file_total?:number,heading?:string|null}>}
+ * @returns {list<{kind:string,status:string,title:string,file?:string,section_index?:number,section_total?:number,file_index?:number,file_total?:number,heading?:string|null,priority?:number}>}
  */
 function buildUnindexedQueue(data, events) {
-    const isActive = data.status === 'processing' || data.status === 'pending';
+    const enrichmentActive = (data.enrichment_pending_files || 0) > 0
+        || data.enrichment_current
+        || (Array.isArray(data.enrichment_queue) && data.enrichment_queue.length > 0);
+    const isActive = data.status === 'processing' || data.status === 'pending' || enrichmentActive;
     if (!isActive) {
         return [];
     }
@@ -186,8 +213,9 @@ function buildUnindexedQueue(data, events) {
     const heading = findCurrentHeading(data, events);
     const phase = data.current_phase;
     const currentFile = data.current_file || '';
+    const evalBusy = data.status === 'processing' || data.status === 'pending';
 
-    if (phase === 'ingest' || phase === 'embed' || phase === 'file' || phase === 'section') {
+    if (evalBusy && (phase === 'ingest' || phase === 'embed' || phase === 'file' || phase === 'section')) {
         queue.push({
             kind: phase,
             status: 'current',
@@ -207,6 +235,20 @@ function buildUnindexedQueue(data, events) {
         });
     }
 
+    const enrichCurrent = data.enrichment_current;
+    if (enrichCurrent) {
+        queue.push({
+            kind: 'enrich',
+            status: 'current',
+            title: enrichCurrent.priority_score > 0
+                ? `Qwen: ${enrichCurrent.title || 'статья'} (priority)`
+                : `Qwen: ${enrichCurrent.title || 'статья'}`,
+            file: enrichCurrent.file || enrichCurrent.link || '',
+            priority: enrichCurrent.priority_score || 0,
+            article_id: enrichCurrent.article_id || null,
+        });
+    }
+
     if (phase === 'section' && data.current_section && data.total_sections) {
         for (let i = data.current_section + 1; i <= data.total_sections; i += 1) {
             queue.push({
@@ -222,37 +264,63 @@ function buildUnindexedQueue(data, events) {
         }
     }
 
-    const files = Array.isArray(data.files) ? data.files : [];
-    const fileTotal = fileMeta.file_total || Number(data.total_files || 0) || files.length;
-    const completedForPhase = phase === 'ingest'
-        ? Number(data.searchable_files || 0)
-        : Number(data.processed_files || 0);
-    const fileIndex = fileMeta.file_index || completedForPhase + 1;
-    if (fileTotal > 0 && fileIndex > 0) {
-        const remainingFiles = fileTotal - fileIndex;
-        if (remainingFiles > 0) {
-            const show = Math.min(remainingFiles, 8);
-            for (let i = 1; i <= show; i += 1) {
-                const nextIndex = fileIndex + i;
-                const filePath = files[nextIndex - 1] || '';
-                const fileName = filePath ? filePath.split('/').pop() : '';
-                queue.push({
-                    kind: 'file',
-                    status: 'pending',
-                    title: fileName || `Файл ${nextIndex}/${fileTotal}`,
-                    file: filePath,
-                    file_index: nextIndex,
-                    file_total: fileTotal,
-                });
-            }
-            if (remainingFiles > show) {
-                queue.push({
-                    kind: 'more',
-                    status: 'pending',
-                    title: `…и ещё ${remainingFiles - show} файл(ов)`,
-                });
+    if (evalBusy) {
+        const files = Array.isArray(data.files) ? data.files : [];
+        const fileTotal = fileMeta.file_total || Number(data.total_files || 0) || files.length;
+        const completedForPhase = phase === 'ingest'
+            ? Number(data.searchable_files || 0)
+            : Number(data.processed_files || 0);
+        const fileIndex = fileMeta.file_index || completedForPhase + 1;
+        if (fileTotal > 0 && fileIndex > 0) {
+            const remainingFiles = fileTotal - fileIndex;
+            if (remainingFiles > 0) {
+                const show = Math.min(remainingFiles, 8);
+                for (let i = 1; i <= show; i += 1) {
+                    const nextIndex = fileIndex + i;
+                    const filePath = files[nextIndex - 1] || '';
+                    const fileName = filePath ? filePath.split('/').pop() : '';
+                    queue.push({
+                        kind: 'file',
+                        status: 'pending',
+                        title: fileName || `Файл ${nextIndex}/${fileTotal}`,
+                        file: filePath,
+                        file_index: nextIndex,
+                        file_total: fileTotal,
+                    });
+                }
+                if (remainingFiles > show) {
+                    queue.push({
+                        kind: 'more',
+                        status: 'pending',
+                        title: `…и ещё ${remainingFiles - show} файл(ов)`,
+                    });
+                }
             }
         }
+    }
+
+    const enrichQueue = Array.isArray(data.enrichment_queue) ? data.enrichment_queue : [];
+    const showEnrich = Math.min(enrichQueue.length, 8);
+    for (let i = 0; i < showEnrich; i += 1) {
+        const item = enrichQueue[i];
+        const fileName = item.file ? item.file.split('/').pop() : '';
+        queue.push({
+            kind: 'enrich',
+            status: 'pending',
+            title: item.priority_score > 0
+                ? `Qwen: ${fileName || item.title || `статья #${item.article_id}`} (priority)`
+                : `Qwen: ${fileName || item.title || `статья #${item.article_id}`}`,
+            file: item.file || item.link || '',
+            priority: item.priority_score || 0,
+            article_id: item.article_id || null,
+        });
+    }
+    if (enrichQueue.length > showEnrich) {
+        queue.push({
+            kind: 'more',
+            status: 'pending',
+            title: `…и ещё ${enrichQueue.length - showEnrich} в очереди Qwen`,
+        });
     }
 
     return queue;
@@ -299,8 +367,17 @@ function renderQueueCard(item) {
     if (item.file_index && item.file_total) {
         metaRow.append(makeBadge(`Файл ${item.file_index}/${item.file_total}`, 'log-badge-file'));
     }
+    if (item.kind === 'enrich') {
+        metaRow.append(makeBadge('Qwen', 'log-badge-enrich'));
+        if (item.priority > 0) {
+            metaRow.append(makeBadge(`priority ${item.priority}`, 'log-badge-enrich'));
+        }
+    }
     if (item.status === 'pending' && item.kind !== 'more') {
-        metaRow.append(makeBadge('не индексировано', 'log-badge-pending'));
+        metaRow.append(makeBadge(
+            item.kind === 'enrich' ? 'ожидает enrichment' : 'не индексировано',
+            'log-badge-pending',
+        ));
     }
     if (metaRow.childElementCount) {
         card.append(metaRow);
@@ -372,9 +449,21 @@ export function initEvalLog() {
             }
         }
 
-        const isActive = lastLogData.status === 'processing' || lastLogData.status === 'pending';
+        const isActive = lastLogData.status === 'processing'
+            || lastLogData.status === 'pending'
+            || (lastLogData.enrichment_pending_files || 0) > 0
+            || !!lastLogData.enrichment_current;
         if (logStepElapsed) {
-            if (isActive && stepStartedAt && ['ingest', 'embed', 'file', 'section'].includes(lastLogData.current_phase)) {
+            const enrichCurrent = lastLogData.enrichment_current;
+            if (isActive && enrichCurrent?.locked_at && !['ingest', 'embed', 'file', 'section'].includes(lastLogData.current_phase)) {
+                const enrichStarted = parseIso(enrichCurrent.locked_at);
+                if (enrichStarted) {
+                    const stepSec = (now - enrichStarted.getTime()) / 1000;
+                    logStepElapsed.textContent = `Текущий Qwen: ${formatDuration(stepSec)}`;
+                } else {
+                    logStepElapsed.textContent = '';
+                }
+            } else if (isActive && stepStartedAt && ['ingest', 'embed', 'file', 'section'].includes(lastLogData.current_phase)) {
                 const stepSec = (now - stepStartedAt.getTime()) / 1000;
                 const target = lastLogData.current_phase === 'section' ? 'секция' : 'файл';
                 logStepElapsed.textContent = `Текущий ${target}: ${formatDuration(stepSec)}`;
@@ -388,8 +477,11 @@ export function initEvalLog() {
         if (!logCurrentEl) return;
 
         const phase = data.current_phase;
-        const isActive = data.status === 'processing'
+        const enrichCurrent = data.enrichment_current;
+        const evalActive = data.status === 'processing'
             && ['ingest', 'embed', 'file', 'section'].includes(phase);
+        const enrichActive = !!enrichCurrent;
+        const isActive = evalActive || enrichActive;
 
         if (isActive) {
             logCurrentEl.hidden = false;
@@ -407,39 +499,71 @@ export function initEvalLog() {
 
         logCurrentBadges?.replaceChildren();
 
-        if (phase === 'ingest' || phase === 'embed' || phase === 'file') {
+        // Prefer showing live evaluation work; otherwise show Qwen enrichment.
+        if (evalActive) {
+            if (phase === 'ingest' || phase === 'embed' || phase === 'file') {
+                if (label) {
+                    label.textContent = phase === 'ingest'
+                        ? 'Сейчас добавляется в полнотекстовый поиск'
+                        : (phase === 'embed' ? 'Сейчас создаётся финальный индекс' : 'Сейчас индексируется файл');
+                }
+                const fileEv = events.findLast((ev) => ev.phase === phase && ev.file === data.current_file);
+                if (fileEv?.file_index && fileEv.file_total) {
+                    logCurrentBadges?.append(makeBadge(`Файл ${fileEv.file_index}/${fileEv.file_total}`, 'log-badge-file'));
+                } else if (data.processed_files != null && data.total_files) {
+                    const completed = phase === 'ingest'
+                        ? Number(data.searchable_files || 0)
+                        : Number(data.processed_files || 0);
+                    logCurrentBadges?.append(makeBadge(`Файл ~${completed + 1}/${data.total_files}`, 'log-badge-file'));
+                }
+                if (path) path.textContent = data.current_file || '—';
+            } else {
+                if (label) {
+                    label.textContent = heading ? `Сейчас индексируется «${heading}»` : 'Сейчас индексируется секция';
+                }
+                if (data.current_section && data.total_sections) {
+                    logCurrentBadges?.append(
+                        makeBadge(`Секция ${data.current_section}/${data.total_sections}`, 'log-badge-section'),
+                    );
+                }
+                const fileEv = events.findLast((ev) => ev.phase === 'file' && ev.file === data.current_file);
+                if (fileEv?.file_index && fileEv.file_total) {
+                    logCurrentBadges?.append(makeBadge(`Файл ${fileEv.file_index}/${fileEv.file_total}`, 'log-badge-file'));
+                }
+                if (path) path.textContent = data.current_file || '—';
+            }
+            if (text) text.textContent = data.current_detail || '(нет текста)';
+        } else if (enrichCurrent) {
             if (label) {
-                label.textContent = phase === 'ingest'
-                    ? 'Сейчас добавляется в полнотекстовый поиск'
-                    : (phase === 'embed' ? 'Сейчас создаётся финальный индекс' : 'Сейчас индексируется файл');
+                label.textContent = enrichCurrent.priority_score > 0
+                    ? 'Сейчас Qwen enrichment (priority)'
+                    : 'Сейчас Qwen enrichment';
             }
-            const fileEv = events.findLast((ev) => ev.phase === phase && ev.file === data.current_file);
-            if (fileEv?.file_index && fileEv.file_total) {
-                logCurrentBadges?.append(makeBadge(`Файл ${fileEv.file_index}/${fileEv.file_total}`, 'log-badge-file'));
-            } else if (data.processed_files != null && data.total_files) {
-                const completed = phase === 'ingest'
-                    ? Number(data.searchable_files || 0)
-                    : Number(data.processed_files || 0);
-                logCurrentBadges?.append(makeBadge(`Файл ~${completed + 1}/${data.total_files}`, 'log-badge-file'));
-            }
-            if (path) path.textContent = data.current_file || '—';
-        } else {
-            if (label) {
-                label.textContent = heading ? `Сейчас индексируется «${heading}»` : 'Сейчас индексируется секция';
-            }
-            if (data.current_section && data.total_sections) {
+            logCurrentBadges?.append(makeBadge('Qwen', 'log-badge-enrich'));
+            if (enrichCurrent.priority_score > 0) {
                 logCurrentBadges?.append(
-                    makeBadge(`Секция ${data.current_section}/${data.total_sections}`, 'log-badge-section'),
+                    makeBadge(`priority ${enrichCurrent.priority_score}`, 'log-badge-enrich'),
                 );
             }
-            const fileEv = events.findLast((ev) => ev.phase === 'file' && ev.file === data.current_file);
-            if (fileEv?.file_index && fileEv.file_total) {
-                logCurrentBadges?.append(makeBadge(`Файл ${fileEv.file_index}/${fileEv.file_total}`, 'log-badge-file'));
+            logCurrentBadges?.append(
+                makeBadge(
+                    `${data.enriched_files || 0}/${data.total_files || 0}`,
+                    'log-badge-file',
+                ),
+            );
+            if (path) {
+                path.textContent = enrichCurrent.file
+                    || enrichCurrent.title
+                    || enrichCurrent.link
+                    || '—';
             }
-            if (path) path.textContent = data.current_file || '—';
+            if (text) {
+                text.textContent = enrichCurrent.title
+                    ? `${enrichCurrent.title}\n${enrichCurrent.link || ''}`
+                    : (enrichCurrent.link || '(нет текста)');
+            }
         }
 
-        if (text) text.textContent = data.current_detail || '(нет текста)';
         updateElapsedDisplays();
     }
 
@@ -459,14 +583,19 @@ export function initEvalLog() {
         }
 
         if (titleEl) {
+            const hasEnrich = recent.some((entry) => entry.kind === 'enrich_done' || entry.kind === 'enrich');
             const hasFiles = recent.some((entry) => entry.kind === 'file');
             const hasSections = recent.some((entry) => entry.kind === 'section');
-            if (hasFiles && hasSections) {
+            if (hasEnrich && !hasFiles && !hasSections) {
+                titleEl.textContent = 'Последние Qwen enrichment';
+            } else if (hasFiles && hasSections) {
                 titleEl.textContent = 'Последние проиндексированные';
             } else if (hasFiles) {
                 titleEl.textContent = 'Последние проиндексированные файлы';
-            } else {
+            } else if (hasSections) {
                 titleEl.textContent = 'Последние проиндексированные секции';
+            } else {
+                titleEl.textContent = 'Последние проиндексированные';
             }
         }
 
@@ -505,25 +634,27 @@ export function initEvalLog() {
         const status = data.status || '—';
         const pct = data.percent ?? 0;
         const searchablePct = data.searchable_percent ?? 0;
-        const isActive = status === 'processing' || status === 'pending';
+        const enrichmentActive = (data.enrichment_pending_files || 0) > 0;
+        const isActive = status === 'processing' || status === 'pending' || enrichmentActive;
 
         if (logMetaEl) {
-            logMetaEl.textContent = `${data.project_name || 'Project'} · ${status} · полнотекстовый поиск ${data.searchable_files || 0}/${data.total_files || 0} · финальный индекс ${data.processed_files || 0}/${data.total_files || 0}`;
+            logMetaEl.textContent = `${data.project_name || 'Project'} · ${status} · полнотекстовый поиск ${data.searchable_files || 0}/${data.total_files || 0} · финальный индекс ${data.processed_files || 0}/${data.total_files || 0} · Qwen ${data.enriched_files || 0}/${data.total_files || 0}`;
         }
 
         if (logStatusBar) logStatusBar.hidden = false;
         if (logLiveIndicator) logLiveIndicator.hidden = !isActive;
         if (logProgressSearchable) logProgressSearchable.style.width = `${searchablePct}%`;
         if (logProgressFill) logProgressFill.style.width = `${pct}%`;
+        renderEnrichmentSegments(logProgressBar, data);
         if (logProgressBar) logProgressBar.setAttribute('aria-valuenow', String(pct));
         if (logProgressBar) {
             logProgressBar.setAttribute(
                 'aria-valuetext',
-                `Полнотекстовый поиск ${searchablePct}%, финальный индекс ${pct}%`,
+                `Полнотекстовый поиск ${searchablePct}%, финальный индекс ${pct}%, Qwen enrichment ${data.enrichment_percent || 0}%`,
             );
         }
         if (logProgressLabel) {
-            logProgressLabel.textContent = `Полнотекстовый поиск: ${searchablePct}% (${data.searchable_files || 0}/${data.total_files || 0}) · Финальный индекс: ${pct}% (${data.processed_files || 0}/${data.total_files || 0})`;
+            logProgressLabel.textContent = `Полнотекстовый поиск: ${searchablePct}% (${data.searchable_files || 0}/${data.total_files || 0}) · Финальный индекс: ${pct}% (${data.processed_files || 0}/${data.total_files || 0}) · Qwen: ${data.enrichment_percent || 0}% (${data.enriched_files || 0}/${data.total_files || 0})`;
         }
 
         const events = data.events || [];
@@ -542,7 +673,7 @@ export function initEvalLog() {
         if (!queue.length) {
             const empty = document.createElement('p');
             empty.className = 'log-empty';
-            empty.textContent = data.status === 'completed'
+            empty.textContent = data.status === 'completed' && (data.enrichment_pending_files || 0) < 1
                 ? 'Очередь пуста — индексация завершена'
                 : 'Очередь пока пуста…';
             logEventsEl.append(empty);
@@ -561,7 +692,11 @@ export function initEvalLog() {
             const data = await parseJsonResponse(res);
             if (!res.ok) throw new Error(data.error || 'Failed to load log');
             renderEvalLog(data);
-            if (data.status !== 'processing' && data.status !== 'pending') {
+            if (
+                data.status !== 'processing'
+                && data.status !== 'pending'
+                && (data.enrichment_pending_files || 0) < 1
+            ) {
                 if (logPollTimer) {
                     clearInterval(logPollTimer);
                     logPollTimer = null;
