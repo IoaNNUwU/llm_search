@@ -13,6 +13,8 @@ require_once __DIR__ . '/../lib/markdown.php';
 
 const ENRICHMENT_LOCK_ID = 731942001;
 const ENRICHMENT_TEXT_LIMIT = 24000;
+const ENRICHMENT_IDLE_BATCH_SIZE = 3;
+const ENRICHMENT_IDLE_BATCH_INTERVAL_SEC = 60;
 
 /** @var array<int, array<string, string>> */
 $fileMapsByProject = [];
@@ -105,6 +107,60 @@ function recover_stale_enrichment_jobs(PDO $pdo): void
          SET status = 'pending', locked_at = NULL, updated_at = NOW()
          WHERE status = 'processing'"
     );
+}
+
+function enrichment_ready_queue_empty(PDO $pdo): bool
+{
+    $busy = (bool) $pdo->query(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM article_enrichment_jobs
+            WHERE status IN ('pending', 'processing')
+        )"
+    )->fetchColumn();
+    return !$busy;
+}
+
+/**
+ * When the enrichment queue is idle, enqueue a few random articles for Qwen.
+ *
+ * Prefers never-enriched articles; if none remain, requeues random completed/failed ones.
+ *
+ * @return list<int> Enqueued article ids
+ */
+function enqueue_random_enrichment_batch(PDO $pdo, int $limit = ENRICHMENT_IDLE_BATCH_SIZE): array
+{
+    $limit = max(1, $limit);
+    $stmt = $pdo->prepare(
+        "WITH candidates AS (
+            SELECT a.id,
+                   CASE WHEN e.article_id IS NULL THEN 0 ELSE 1 END AS already_enriched
+            FROM articles a
+            LEFT JOIN article_enrichments e ON e.article_id = a.id
+            LEFT JOIN article_enrichment_jobs j ON j.article_id = a.id
+            WHERE j.article_id IS NULL
+               OR j.status NOT IN ('pending', 'processing')
+            ORDER BY already_enriched ASC, random()
+            LIMIT :limit
+        )
+        INSERT INTO article_enrichment_jobs (
+            article_id, status, attempts, run_after, locked_at, last_error, updated_at
+        )
+        SELECT
+            id, 'pending', 0, NOW(), NULL, NULL, NOW()
+        FROM candidates
+        ON CONFLICT (article_id) DO UPDATE SET
+            status = 'pending',
+            attempts = 0,
+            run_after = NOW(),
+            locked_at = NULL,
+            last_error = NULL,
+            updated_at = NOW()
+        RETURNING article_id"
+    );
+    $stmt->bindValue('limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    return array_map(static fn (array $row): int => (int) $row['article_id'], $stmt->fetchAll());
 }
 
 /**
@@ -362,6 +418,7 @@ if (!$locked) {
 
 recover_stale_enrichment_jobs($pdo);
 fwrite(STDOUT, "Enrichment worker started\n");
+$lastIdleBatchAt = 0;
 
 while (true) {
     try {
@@ -373,6 +430,23 @@ while (true) {
 
         $job = dequeue_enrichment_job($pdo, $mode === 'embed');
         if ($job === null) {
+            if (
+                $mode === 'idle'
+                && enrichment_ready_queue_empty($pdo)
+                && (time() - $lastIdleBatchAt) >= ENRICHMENT_IDLE_BATCH_INTERVAL_SEC
+            ) {
+                $enqueued = enqueue_random_enrichment_batch($pdo);
+                $lastIdleBatchAt = time();
+                if ($enqueued !== []) {
+                    fwrite(
+                        STDOUT,
+                        'Idle queue refill: enqueued articles '
+                        . implode(', ', $enqueued)
+                        . " for Qwen enrichment\n"
+                    );
+                    continue;
+                }
+            }
             sleep($mode === 'embed' ? 1 : 3);
             continue;
         }
